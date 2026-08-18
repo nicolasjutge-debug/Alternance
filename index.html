@@ -1170,7 +1170,7 @@
         "Authorization": "Bearer " + groqApiKey
       },
       body: JSON.stringify({
-        model: "groq/compound",
+        model: "compound-beta-mini",
         messages: [{ role:"user", content: prompt }],
         temperature: 0.3,
         max_tokens: 1024
@@ -1209,16 +1209,14 @@
     statusEl.className = 'scan-status';
     statusEl.textContent = '';
 
-    // On n'envoie que l'essentiel (entreprise+poste) pour la dédup, max 40 entrées → prompt léger
-    const knownShort = allListings().slice(0,40).map(i=>`${i.entreprise} – ${i.poste}`).join('\n');
-    const prompt = `Tu es un assistant de recherche d'alternance. Cherche sur le web des offres RÉELLES de contrat d'apprentissage/alternance pour un profil BTS SIO SISR à Rennes (35) ou moins d'1h, rentrée 2026 ou 2027.
+    // On n'envoie que l'essentiel (entreprise+poste) pour la dédup, max 15 entrées → prompt léger
+    const knownShort = allListings().slice(0,15).map(i=>`${i.entreprise} – ${i.poste}`).join('\n');
+    const prompt = `Cherche sur le web des offres RÉELLES d'alternance BTS SIO SISR à Rennes (35) ou -1h, rentrée 2026-2027. CFA (AFTEC, MyDigitalSchool) et employeurs directs.
 
-Cherche à la fois des offres CFA (AFTEC Rennes, MyDigitalSchool, autres CFA info Bretagne) et des offres directes employeur (entreprises, collectivités, grands groupes).
-
-Annonces déjà au dossier (ne pas renvoyer) :
+Déjà au dossier (ne pas renvoyer) :
 ${knownShort}
 
-Réponds UNIQUEMENT avec un tableau JSON valide ([ ... ]), sans aucun texte avant/après. Chaque élément a ces clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac (bool), salaire, datePublication (YYYY-MM-DD), echeance, debut, email, lien, secteur, missions (1-2 phrases). Max 3 annonces nouvelles et vérifiables. Si rien de nouveau : [].`;
+Réponds UNIQUEMENT avec un tableau JSON valide ([ ... ]), sans texte autour. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac (bool), salaire, datePublication (YYYY-MM-DD), echeance, debut, email, lien, secteur, missions (1 phrase). Max 3 annonces nouvelles. Si rien : [].`;
 
     try{
       const text = await callGroqWithSearch(prompt);
