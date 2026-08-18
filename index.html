@@ -143,12 +143,6 @@
   .scan-status{font-size:13px; line-height:1.5; margin:-2px 0 12px; min-height:0;}
   .scan-status.ok{color:var(--green);}
   .scan-status.err{color:var(--red);}
-  .live-widget-note{font-size:13.5px; color:var(--text-dim); line-height:1.6; margin:0 0 14px;}
-  .live-widget-note a{color:var(--cyan);}
-  .live-widget-wrap{border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--surface); margin-bottom:8px;}
-  .live-widget-wrap iframe{width:100%; height:640px; border:0; display:block; background:#fff;}
-  .live-widget-fallback{font-size:12.5px; color:var(--text-faint); margin:0 0 24px;}
-  .live-widget-fallback a{color:var(--cyan);}
   .badge.cyber{color:#062023; background:var(--cyan); border-color:var(--cyan); font-weight:700;}
 
   /* ---------- STATS ---------- */
@@ -367,8 +361,11 @@
       <b>⚠ NOTE RENTRÉE 2027 —</b> aucune annonce pour septembre 2027 n'est encore en ligne (trop tôt : les employeurs et CFA publient en général 2 à 8 mois avant le début du contrat). Ce dossier réunit <b>16 annonces réelles rentrée 2026</b> repérées à Rennes/proche Rennes mi-août 2026 — <b>13 via des CFA</b> (AFTEC, MyDigitalSchool) encore actives, et <b>3 en candidature directe hors CFA</b> (Rennes Métropole, Région Bretagne — déjà closes mais employeurs confirmés) — à utiliser comme repérage d'entreprises, d'employeurs publics et de CFA à recontacter pour 2027. Ajoute ici toute vraie annonce 2027 dès qu'elle sort.
     </div>
     <div class="scan-live">
-      <div class="scan-live-head"><span class="scan-dot"></span><b>Scan web — dernière recherche le <span id="scanHeadDate">16/08/2026</span></b></div>
+      <div class="scan-live-head"><span class="scan-dot"></span><b>Scan web — dernière recherche le <span id="scanHeadDate">18/08/2026</span></b></div>
       <p><b>Élargi aux sources hors CFA :</b> en plus d'AFTEC et MyDigitalSchool (13 annonces via CFA), la recherche a vérifié les employeurs qui recrutent en direct à Rennes — <b>Rennes Métropole / Ville de Rennes</b> (DSN) et la <b>Région Bretagne</b> (Direction du Numérique). 3 annonces réelles trouvées et ajoutées, repérables au badge <b>🏢 CANDIDATURE DIRECTE</b> : leurs candidatures 2026 sont déjà closes, mais ce sont des employeurs confirmés à recontacter pour 2027. Côté entreprises privées : la plupart des offres trouvées passent par un CFA (c'est normal, c'est leur rôle) — aucune offre directe suffisamment fiable et actuelle n'a été trouvée cette fois, mais SNCF (gros site à Rennes, 150 métiers en alternance) a été ajouté en lien de veille ci-dessous.</p>
+
+      <p><b>🔎 Recherche du 18/08/2026 — résultats :</b> aucune annonce publiée en août 2026 pour une alternance "BTS SIO SISR – rentrée 2027" à Rennes (trop tôt). En revanche, deux nouvelles pistes de formation identifiées : <b>ESNA Rennes/Bruz</b> — BTS SIO SISR en apprentissage 2 ans, accessible Bac STI2D, prépa cybersécurité intégrée, rythme 2 sem. entreprise / 2 sem. formation ; <b>CMA Formation Bruz</b> (~15 min de Rennes) — BTS SIO réseaux &amp; cybersécurité en alternance, phase complémentaire 2026 ouverte jusqu'au 10/09/2026. <b>Rennes Métropole</b> confirmée cible prioritaire (offre 2026 close le 12/04 — preuve qu'ils recrutent ce profil). Entreprises rennaises à cibler en candidature spontanée : ACCEIS, Nomios, SERMA Safety &amp; Security, Axido, ASF Informatique, CYBERDREAM Solutions, Cyber Dev, Secure-IC, Airbus CyberSecurity. 💡 Conseil : chercher en priorité les intitulés <i>Technicien informatique / systèmes et réseaux / support / infrastructure / support &amp; cybersécurité</i> plutôt que "cybersécurité" seul — c'est là que se trouvent les alternances accessibles après le Bac pour un BTS SIO SISR.</p>
+
       <p>🔎 <b>Scan IA à la demande :</b> le bouton ci-dessous relance une vraie recherche web (via Groq, modèle avec recherche web intégrée) et ajoute automatiquement les nouvelles annonces trouvées au dossier, y compris hors CFA. <b>Fonctionne partout</b> — fichier téléchargé, GitHub Pages, PWA installée — plus besoin d'ouvrir ce dossier dans Claude.ai. Il faut juste une clé API Groq gratuite, à coller une seule fois via <b>🔑 Clé API</b>. Le widget juste en dessous, lui, ne demande aucune clé.</p>
       <div class="scan-actions">
         <button class="btn primary" id="scanNowBtn" type="button">🔎 Scanner maintenant (IA)</button>
@@ -380,7 +377,7 @@
         <a href="https://www.mydigitalschool.com/alternance-informatique" target="_blank" rel="noopener noreferrer">🎓 MyDigitalSchool — Informatique</a>
         <a href="https://www.hellowork.com/fr-fr/alternance/mot-cle_bts-sio-sisr.html" target="_blank" rel="noopener noreferrer">🔎 Hellowork — « BTS SIO SISR »</a>
         <a href="https://www.hellowork.com/fr-fr/alternance/domaine_informatique-ville_rennes-35000.html" target="_blank" rel="noopener noreferrer">🔎 Hellowork — Informatique Rennes</a>
-        <a href="https://labonnealternance.apprentissage.beta.gouv.fr/recherche" target="_blank" rel="noopener noreferrer">🏛️ La bonne alternance (service public)</a>
+        <a href="https://labonnealternance.apprentissage.beta.gouv.fr/recherche-emploi?radius=60&romes=M1801,M1802,M1810,I1401&scope=all&lat=48.1173&lon=-1.6778" target="_blank" rel="noopener noreferrer">🏛️ La bonne alternance — Informatique Rennes (60 km)</a>
         <a href="https://fr.indeed.com/jobs?q=BTS+SIO+SISR+alternance&amp;l=Rennes+%2835%29" target="_blank" rel="noopener noreferrer">🔎 Indeed — Rennes</a>
         <a href="https://www.linkedin.com/jobs/search/?keywords=BTS%20SIO%20SISR%20alternance&amp;location=Rennes%2C%20Bretagne%2C%20France" target="_blank" rel="noopener noreferrer">🔎 LinkedIn — « BTS SIO SISR » Rennes</a>
         <a href="https://recrutement.rennesmetropole.fr/search/set-vacsearchfront_type_cnc_fo-004/type-d-emploi-apprentissage-22" target="_blank" rel="noopener noreferrer">🏢 Rennes Métropole — Offres apprentissage</a>
@@ -388,25 +385,20 @@
         <a href="https://www.emploi-territorial.fr/emploi-mobilite/" target="_blank" rel="noopener noreferrer">🏢 Emploi-territorial.fr — Fonction publique (Bretagne)</a>
         <a href="https://www.emploi-territorial.fr/demandeur/inscription" target="_blank" rel="noopener noreferrer">🔔 Emploi-territorial.fr — Alerte email</a>
         <a href="https://emploi.sncf.com/alternance-et-stage/entreprise-daccueil" target="_blank" rel="noopener noreferrer">🏢 SNCF — Alternance (150 métiers)</a>
+        <a href="https://www.esna-rennes.fr" target="_blank" rel="noopener noreferrer">🎓 ESNA Rennes/Bruz — BTS SIO SISR + prépa cyber</a>
+        <a href="https://www.cma-formation-bretagne.fr/bts-sio-phase-complementaire/" target="_blank" rel="noopener noreferrer">🎓 CMA Formation Bruz — BTS SIO réseaux &amp; cyber</a>
+        <a href="https://www.acceis.fr" target="_blank" rel="noopener noreferrer">🛡️ ACCEIS — Cyber Rennes</a>
+        <a href="https://www.nomios.fr" target="_blank" rel="noopener noreferrer">🛡️ Nomios — Cyber &amp; réseaux Rennes</a>
+        <a href="https://www.serma-security.com" target="_blank" rel="noopener noreferrer">🛡️ SERMA Safety &amp; Security</a>
+        <a href="https://www.axido.com" target="_blank" rel="noopener noreferrer">🛡️ Axido — Infogérance &amp; Cyber Rennes</a>
+        <a href="https://www.asf-informatique.fr" target="_blank" rel="noopener noreferrer">🛡️ ASF Informatique — Rennes</a>
+        <a href="https://www.cyberdream.fr" target="_blank" rel="noopener noreferrer">🛡️ CYBERDREAM Solutions — Rennes</a>
+        <a href="https://www.cyber-dev.fr" target="_blank" rel="noopener noreferrer">🛡️ Cyber Dev — Rennes</a>
+        <a href="https://www.secure-ic.com" target="_blank" rel="noopener noreferrer">🛡️ Secure-IC — Cyber Rennes</a>
+        <a href="https://www.airbus.com/fr/carrieres/etudiants-et-diplomes/alternance" target="_blank" rel="noopener noreferrer">🛡️ Airbus CyberSecurity — Alternances</a>
       </div>
     </div>
   </div>
-
-  <div class="section-head">
-    <h2>📡 Offres en direct — La bonne alternance</h2>
-    <span class="n">zéro Claude requis</span>
-  </div>
-  <div class="live-widget-note">
-    Widget officiel du service public (<a href="https://api.apprentissage.beta.gouv.fr/fr/explorer/recherche-offre" target="_blank" rel="noopener noreferrer">La bonne alternance</a> — France Travail, Météojobs, Enedis, Engie et autres partenaires, ~350&nbsp;000 offres, mises à jour quotidiennement) : résultats réels chargés en direct à chaque ouverture de cette page, sans clé, sans compte, sans passer par Claude. Filtré sur les métiers réseaux/systèmes/support informatique (codes ROME M1801, M1802, M1810, I1401), rayon 60&nbsp;km autour de Rennes.
-  </div>
-  <div class="live-widget-wrap">
-    <iframe
-      title="Offres d'alternance en direct — La bonne alternance"
-      src="https://labonnealternance.apprentissage.beta.gouv.fr/recherche-emploi?radius=60&romes=M1801,M1802,M1810,I1401&scope=all&lat=48.1173&lon=-1.6778&caller=RadarAlternanceRennes"
-      loading="lazy"
-      referrerpolicy="no-referrer-when-downgrade"></iframe>
-  </div>
-  <p class="live-widget-fallback">Le widget ne s'affiche pas (bloqué par le navigateur) ? <a href="https://labonnealternance.apprentissage.beta.gouv.fr/recherche-emploi?radius=60&romes=M1801,M1802,M1810,I1401&scope=all&lat=48.1173&lon=-1.6778&caller=RadarAlternanceRennes" target="_blank" rel="noopener noreferrer">ouvre-le directement dans un nouvel onglet</a>. Les annonces intéressantes trouvées ici s'ajoutent au dossier avec « + Ajouter une annonce » ci-dessous.</p>
 
   <div class="stats" id="statsBar"></div>
 
@@ -455,7 +447,7 @@
   </div>
 
   <footer>
-    Dossier constitué à partir de recherches web, dernière mise à jour le 16/08/2026 (AFTEC Rennes — 289 offres informatique parcourues, MyDigitalSchool Rennes, Hellowork, La bonne alternance, Rennes Métropole, Région Bretagne / emploi-territorial.fr, sites des CFA cités). Les annonces d'alternance changent vite et certaines des 16 annonces 2026 ci-dessus peuvent déjà être pourvues ou closes (c'est le cas confirmé des 3 annonces hors CFA) au moment où tu lis ceci — elles restent utiles comme indicateur des employeurs actifs sur ce type de poste.
+    Dossier constitué à partir de recherches web, dernière mise à jour le 18/08/2026 (AFTEC Rennes — 289 offres informatique parcourues, MyDigitalSchool Rennes, ESNA Rennes/Bruz, CMA Formation Bruz, Hellowork, La bonne alternance, Rennes Métropole, Région Bretagne / emploi-territorial.fr, entreprises cyber rennaises). Les annonces d'alternance changent vite et certaines des 16 annonces 2026 ci-dessus peuvent déjà être pourvues ou closes (c'est le cas confirmé des 3 annonces hors CFA) au moment où tu lis ceci — elles restent utiles comme indicateur des employeurs actifs sur ce type de poste.
     <br><br>
     <button class="btn ghost" id="exportBtn">⭳ Exporter en CSV</button>
     <button class="btn ghost" id="resetBtn">↺ Réinitialiser mon suivi (statuts/notes)</button>
@@ -1211,7 +1203,7 @@
 
     // On n'envoie que l'essentiel (entreprise+poste) pour la dédup, max 15 entrées → prompt léger
     const knownShort = allListings().slice(0,15).map(i=>`${i.entreprise} – ${i.poste}`).join('\n');
-    const prompt = `Cherche sur le web des offres RÉELLES d'alternance BTS SIO SISR à Rennes (35) ou -1h, rentrée 2026-2027. CFA (AFTEC, MyDigitalSchool) et employeurs directs.
+    const prompt = `Cherche sur le web des offres RÉELLES d'alternance BTS SIO SISR à Rennes (35) ou -1h, rentrée 2026-2027. Cherche chez ces sources : AFTEC Rennes, MyDigitalSchool Rennes, ESNA Rennes/Bruz, CMA Formation Bruz, Ynov Rennes, ESUP Rennes, Pôle BTS Alternance Rennes, La bonne alternance (labonnealternance.apprentissage.beta.gouv.fr), Hellowork, Indeed, LinkedIn, Rennes Métropole, Région Bretagne, emploi-territorial.fr, SNCF, ACCEIS, Nomios, SERMA, Axido, ASF Informatique, CYBERDREAM, Cyber Dev, Secure-IC, Airbus CyberSecurity.
 
 Déjà au dossier (ne pas renvoyer) :
 ${knownShort}
