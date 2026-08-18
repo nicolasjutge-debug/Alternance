@@ -1159,10 +1159,10 @@
     try{ return JSON.parse(cleaned.slice(start, end+1)); }catch(e){ return []; }
   }
 
-  // groq/compound gère la recherche web en interne (déclenchée automatiquement, ici forcée via
-  // compound_custom) et renvoie directement le texte final en une seule requête — pas besoin de
-  // boucle multi-tours comme avec l'ancien appel Anthropic.
+  // compound-beta gère la recherche web en interne et renvoie le texte final en une seule
+  // requête sans paramètre extra — pas besoin de boucle multi-tours.
   async function callGroqWithSearch(prompt){
+    // compound-beta = modèle Groq avec recherche web intégrée (pas besoin de paramètre extra)
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -1170,14 +1170,14 @@
         "Authorization": "Bearer " + groqApiKey
       },
       body: JSON.stringify({
-        model: "groq/compound",
+        model: "compound-beta",
         messages: [{ role:"user", content: prompt }],
         temperature: 0.3,
-        max_tokens: 2000,
-        compound_custom: { tools: { enabled_tools: ["web_search"] } }
+        max_tokens: 1024
       })
     });
     if(response.status===401 || response.status===403) throw new Error('BAD_KEY');
+    if(response.status===413) throw new Error('PAYLOAD_TOO_LARGE');
     if(response.status===429) throw new Error('RATE_LIMIT');
     if(!response.ok) throw new Error('HTTP_'+response.status);
     const data = await response.json();
@@ -1209,16 +1209,16 @@
     statusEl.className = 'scan-status';
     statusEl.textContent = '';
 
-    const known = allListings().map(i => ({ poste:i.poste, entreprise:i.entreprise, lien:i.lien }));
-    const prompt = `Tu es un assistant de recherche d'alternance. Cherche sur le web des offres RÉELLES et VÉRIFIABLES de contrat d'apprentissage/alternance pour un profil BTS SIO SISR (ou BTS SIO générique, technicien réseaux/systèmes/support informatique niveau Bac+2) à Rennes (35) et à moins d'1h de route, pour la rentrée 2026 (encore ouvertes) ou 2027 (dès que publiées).
+    // On n'envoie que l'essentiel (entreprise+poste) pour la dédup, max 40 entrées → prompt léger
+    const knownShort = allListings().slice(0,40).map(i=>`${i.entreprise} – ${i.poste}`).join('\n');
+    const prompt = `Tu es un assistant de recherche d'alternance. Cherche sur le web des offres RÉELLES de contrat d'apprentissage/alternance pour un profil BTS SIO SISR à Rennes (35) ou moins d'1h, rentrée 2026 ou 2027.
 
-Cherche à la fois :
-1. Des offres publiées via des CFA/écoles (AFTEC Rennes, MyDigitalSchool Rennes, autres CFA informatique de la région).
-2. Des offres publiées EN DIRECT par l'employeur (hors CFA) : entreprises privées, collectivités territoriales, administrations, grands groupes avec leur propre portail RH.
+Cherche à la fois des offres CFA (AFTEC Rennes, MyDigitalSchool, autres CFA info Bretagne) et des offres directes employeur (entreprises, collectivités, grands groupes).
 
-Annonces déjà connues au dossier, à ne PAS renvoyer : ${JSON.stringify(known).slice(0,3000)}
+Annonces déjà au dossier (ne pas renvoyer) :
+${knownShort}
 
-Fais au maximum 2 recherches web, puis conclus. Réponds UNIQUEMENT avec un tableau JSON valide, sans aucun texte avant/après ni balises markdown, où chaque élément a exactement ces clés : poste, option, entreprise, cfa (nom du CFA si l'offre passe par un CFA, sinon chaîne vide), lieu, niveau, accessibleBac (booléen), salaire, datePublication (YYYY-MM-DD), echeance, debut, email (ou null), lien, secteur, missions (1-2 phrases courtes, dans tes propres mots). Maximum 3 annonces, les plus récentes et pertinentes. Si tu ne trouves aucune nouvelle offre réelle et vérifiable, réponds []. N'invente jamais une offre : uniquement des annonces trouvées via une vraie recherche web. Le tout premier caractère de ta réponse doit être [ et le tout dernier doit être ] — rien d'autre avant ou après, pas même une phrase d'introduction.`;
+Réponds UNIQUEMENT avec un tableau JSON valide ([ ... ]), sans aucun texte avant/après. Chaque élément a ces clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac (bool), salaire, datePublication (YYYY-MM-DD), echeance, debut, email, lien, secteur, missions (1-2 phrases). Max 3 annonces nouvelles et vérifiables. Si rien de nouveau : [].`;
 
     try{
       const text = await callGroqWithSearch(prompt);
@@ -1262,6 +1262,8 @@ Fais au maximum 2 recherches web, puis conclus. Réponds UNIQUEMENT avec un tabl
       if(err && err.message==='BAD_KEY'){
         statusEl.textContent = "⚠️ Clé API Groq refusée — vérifie qu'elle est correcte (ou régénère-la sur console.groq.com/keys), puis réessaie.";
         openKeyModal();
+      }else if(err && err.message==='PAYLOAD_TOO_LARGE'){
+        statusEl.textContent = "⚠️ Requête trop volumineuse pour Groq (413). Réessaie — le prompt a été allégé dans cette version.";
       }else if(err && err.message==='RATE_LIMIT'){
         statusEl.textContent = "⚠️ Limite de requêtes Groq atteinte pour l'instant — réessaie dans quelques minutes.";
       }else if(err instanceof TypeError){
