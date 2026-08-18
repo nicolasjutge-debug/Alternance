@@ -1142,7 +1142,7 @@
     document.getElementById('f-groq-key').value = '';
   }
 
-  /* ============ SCAN LIVE (vrai appel web via l'API Groq — modèle groq/compound, recherche web
+  /* ============ SCAN LIVE (vrai appel web via l'API Groq — modèle compound-beta-mini, recherche web
      intégrée — fonctionne partout : fichier téléchargé, GitHub Pages, PWA, sans dépendre de Claude.ai) ============ */
   function extractJsonArray(text){
     const raw = String(text||'').trim();
@@ -1162,7 +1162,7 @@
   // compound-beta gère la recherche web en interne et renvoie le texte final en une seule
   // requête sans paramètre extra — pas besoin de boucle multi-tours.
   async function callGroqWithSearch(prompt){
-    // compound-beta = modèle Groq avec recherche web intégrée (pas besoin de paramètre extra)
+    // compound-beta-mini = modèle Groq avec recherche web intégrée, version légère (moins de 413)
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
