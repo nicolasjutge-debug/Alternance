@@ -1170,7 +1170,7 @@
         "Authorization": "Bearer " + groqApiKey
       },
       body: JSON.stringify({
-        model: "compound-beta",
+        model: "groq/compound",
         messages: [{ role:"user", content: prompt }],
         temperature: 0.3,
         max_tokens: 1024
