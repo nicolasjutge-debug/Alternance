@@ -2,8 +2,21 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Radar Alternance — BTS SIO SISR · Rennes</title>
+
+<!-- PWA : installation iPhone (Add to Home Screen) + PC/Android (Install app) -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a0e0f">
+<link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Radar Alternance">
+<meta name="mobile-web-app-capable" content="yes">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -130,6 +143,12 @@
   .scan-status{font-size:13px; line-height:1.5; margin:-2px 0 12px; min-height:0;}
   .scan-status.ok{color:var(--green);}
   .scan-status.err{color:var(--red);}
+  .live-widget-note{font-size:13.5px; color:var(--text-dim); line-height:1.6; margin:0 0 14px;}
+  .live-widget-note a{color:var(--cyan);}
+  .live-widget-wrap{border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--surface); margin-bottom:8px;}
+  .live-widget-wrap iframe{width:100%; height:640px; border:0; display:block; background:#fff;}
+  .live-widget-fallback{font-size:12.5px; color:var(--text-faint); margin:0 0 24px;}
+  .live-widget-fallback a{color:var(--cyan);}
   .badge.cyber{color:#062023; background:var(--cyan); border-color:var(--cyan); font-weight:700;}
 
   /* ---------- STATS ---------- */
@@ -350,8 +369,8 @@
     <div class="scan-live">
       <div class="scan-live-head"><span class="scan-dot"></span><b>Scan web — dernière recherche le <span id="scanHeadDate">16/08/2026</span></b></div>
       <p><b>Élargi aux sources hors CFA :</b> en plus d'AFTEC et MyDigitalSchool (13 annonces via CFA), la recherche a vérifié les employeurs qui recrutent en direct à Rennes — <b>Rennes Métropole / Ville de Rennes</b> (DSN) et la <b>Région Bretagne</b> (Direction du Numérique). 3 annonces réelles trouvées et ajoutées, repérables au badge <b>🏢 CANDIDATURE DIRECTE</b> : leurs candidatures 2026 sont déjà closes, mais ce sont des employeurs confirmés à recontacter pour 2027. Côté entreprises privées : la plupart des offres trouvées passent par un CFA (c'est normal, c'est leur rôle) — aucune offre directe suffisamment fiable et actuelle n'a été trouvée cette fois, mais SNCF (gros site à Rennes, 150 métiers en alternance) a été ajouté en lien de veille ci-dessous.</p>
-      <p>🔎 <b>Scan en direct :</b> le bouton ci-dessous relance une vraie recherche web et ajoute automatiquement les nouvelles annonces trouvées au dossier — <b>si ce dossier est ouvert comme fichier vivant dans Claude.ai</b>. Ouvert seul depuis ton téléphone ou ton ordinateur (comme un PDF enregistré), aucune page ne peut interroger le web d'elle-même : le bouton te l'expliquera clairement au lieu de rester silencieux. Dans ce cas, reviens dans une conversation Claude pour relancer un scan à la main, ou utilise les liens ci-dessous pour vérifier toi-même.</p>
-      <button class="btn primary" id="scanNowBtn" type="button">🔎 Scanner maintenant</button>
+      <p>🔎 <b>Scan IA à la demande :</b> le bouton ci-dessous relance une vraie recherche web (via Claude) et ajoute automatiquement les nouvelles annonces trouvées au dossier, y compris hors CFA — <b>mais seulement si ce dossier est ouvert comme fichier vivant dans Claude.ai</b>. Ouvert seul (téléchargé, GitHub Pages, PWA installée), ce bouton ne peut pas joindre le web : il te l'expliquera clairement plutôt que d'échouer en silence. Pour une couverture qui marche <b>tout le temps, sans repasser par Claude</b>, voir le widget en direct juste en dessous.</p>
+      <button class="btn primary" id="scanNowBtn" type="button">🔎 Scanner maintenant (IA)</button>
       <div class="scan-status" id="scanStatus"></div>
       <div class="scan-links">
         <a href="https://www.aftec.fr/alternance-informatique" target="_blank" rel="noopener noreferrer">🎓 AFTEC — Informatique Rennes</a>
@@ -369,6 +388,22 @@
       </div>
     </div>
   </div>
+
+  <div class="section-head">
+    <h2>📡 Offres en direct — La bonne alternance</h2>
+    <span class="n">zéro Claude requis</span>
+  </div>
+  <div class="live-widget-note">
+    Widget officiel du service public (<a href="https://api.apprentissage.beta.gouv.fr/fr/explorer/recherche-offre" target="_blank" rel="noopener noreferrer">La bonne alternance</a> — France Travail, Météojobs, Enedis, Engie et autres partenaires, ~350&nbsp;000 offres, mises à jour quotidiennement) : résultats réels chargés en direct à chaque ouverture de cette page, sans clé, sans compte, sans passer par Claude. Filtré sur les métiers réseaux/systèmes/support informatique (codes ROME M1801, M1802, M1810, I1401), rayon 60&nbsp;km autour de Rennes.
+  </div>
+  <div class="live-widget-wrap">
+    <iframe
+      title="Offres d'alternance en direct — La bonne alternance"
+      src="https://labonnealternance.apprentissage.beta.gouv.fr/recherche-emploi?radius=60&romes=M1801,M1802,M1810,I1401&scope=all&lat=48.1173&lon=-1.6778&caller=RadarAlternanceRennes"
+      loading="lazy"
+      referrerpolicy="no-referrer-when-downgrade"></iframe>
+  </div>
+  <p class="live-widget-fallback">Le widget ne s'affiche pas (bloqué par le navigateur) ? <a href="https://labonnealternance.apprentissage.beta.gouv.fr/recherche-emploi?radius=60&romes=M1801,M1802,M1810,I1401&scope=all&lat=48.1173&lon=-1.6778&caller=RadarAlternanceRennes" target="_blank" rel="noopener noreferrer">ouvre-le directement dans un nouvel onglet</a>. Les annonces intéressantes trouvées ici s'ajoutent au dossier avec « + Ajouter une annonce » ci-dessous.</p>
 
   <div class="stats" id="statsBar"></div>
 
@@ -1040,6 +1075,7 @@
   /* ============ SCAN LIVE (vrai appel web via l'API Anthropic — fonctionne si ce dossier est ouvert comme fichier vivant dans Claude.ai) ============ */
   function extractJsonArray(text){
     const raw = String(text||'').trim();
+    if(!raw) return [];
     // 1) le modèle a répondu avec du JSON pur, comme demandé
     try{ const d = JSON.parse(raw); if(Array.isArray(d)) return d; }catch(e){}
     // 2) on retire d'éventuelles balises markdown
@@ -1048,8 +1084,37 @@
     // 3) le modèle a ajouté du texte autour : on extrait le premier tableau JSON présent
     const start = cleaned.indexOf('[');
     const end = cleaned.lastIndexOf(']');
-    if(start===-1 || end===-1 || end<start) throw new Error('parse-vide');
-    return JSON.parse(cleaned.slice(start, end+1));
+    if(start===-1 || end===-1 || end<start) return [];
+    try{ return JSON.parse(cleaned.slice(start, end+1)); }catch(e){ return []; }
+  }
+
+  // La recherche web côté API peut être longue : l'API renvoie alors stop_reason:"pause_turn"
+  // avec une réponse encore incomplète (pas de texte final) au lieu de finir tout de suite.
+  // Il faut renvoyer l'historique complet pour que la génération continue, jusqu'à un
+  // stop_reason final (end_turn...). Sans ça, le texte reçu est vide → c'était le vrai bug.
+  async function callClaudeWithSearch(prompt){
+    let messages = [{ role:"user", content: prompt }];
+    for(let round=0; round<4; round++){
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages,
+          tools: [{ type:"web_search_20250305", name:"web_search" }]
+        })
+      });
+      if(!response.ok) throw new Error('HTTP '+response.status);
+      const data = await response.json();
+      const text = (data.content||[]).map(b => b.type==='text' ? b.text : '').filter(Boolean).join('\n');
+      if(data.stop_reason==='pause_turn' && Array.isArray(data.content) && data.content.length){
+        messages = [...messages, { role:"assistant", content:data.content }];
+        continue; // la recherche continue, on redemande la suite
+      }
+      return text;
+    }
+    return ''; // trop de tours sans réponse finale — traité comme "rien trouvé" par l'appelant
   }
 
   function updateScanHead(){
@@ -1075,24 +1140,11 @@ Cherche à la fois :
 
 Annonces déjà connues au dossier, à ne PAS renvoyer : ${JSON.stringify(known).slice(0,3000)}
 
-Réponds UNIQUEMENT avec un tableau JSON valide, sans aucun texte avant/après ni balises markdown, où chaque élément a exactement ces clés : poste, option, entreprise, cfa (nom du CFA si l'offre passe par un CFA, sinon chaîne vide), lieu, niveau, accessibleBac (booléen), salaire, datePublication (YYYY-MM-DD), echeance, debut, email (ou null), lien, secteur, missions (2-3 phrases, dans tes propres mots). Maximum 5 annonces, les plus récentes et pertinentes. Si tu ne trouves aucune nouvelle offre réelle et vérifiable, réponds []. N'invente jamais une offre : uniquement des annonces trouvées via une vraie recherche web. Le tout premier caractère de ta réponse doit être [ et le tout dernier doit être ] — rien d'autre avant ou après, pas même une phrase d'introduction.`;
+Fais au maximum 2 recherches web, puis conclus. Réponds UNIQUEMENT avec un tableau JSON valide, sans aucun texte avant/après ni balises markdown, où chaque élément a exactement ces clés : poste, option, entreprise, cfa (nom du CFA si l'offre passe par un CFA, sinon chaîne vide), lieu, niveau, accessibleBac (booléen), salaire, datePublication (YYYY-MM-DD), echeance, debut, email (ou null), lien, secteur, missions (1-2 phrases courtes, dans tes propres mots). Maximum 3 annonces, les plus récentes et pertinentes. Si tu ne trouves aucune nouvelle offre réelle et vérifiable, réponds []. N'invente jamais une offre : uniquement des annonces trouvées via une vraie recherche web. Le tout premier caractère de ta réponse doit être [ et le tout dernier doit être ] — rien d'autre avant ou après, pas même une phrase d'introduction.`;
 
     try{
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1000,
-          messages: [{ role:"user", content: prompt }],
-          tools: [{ type:"web_search_20250305", name:"web_search" }]
-        })
-      });
-      if(!response.ok) throw new Error('HTTP '+response.status);
-      const data = await response.json();
-      const text = (data.content||[]).map(b => b.type==='text' ? b.text : '').filter(Boolean).join('\n');
+      const text = await callClaudeWithSearch(prompt);
       const found = extractJsonArray(text);
-      if(!Array.isArray(found)) throw new Error('Réponse inattendue');
 
       let added = 0;
       found.forEach(it=>{
@@ -1125,16 +1177,11 @@ Réponds UNIQUEMENT avec un tableau JSON valide, sans aucun texte avant/après n
       statusEl.className = 'scan-status ok';
       statusEl.textContent = added>0
         ? `✅ ${added} nouvelle${added>1?'s':''} annonce${added>1?'s':''} trouvée${added>1?'s':''} et ajoutée${added>1?'s':''} au dossier.`
-        : '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier).';
+        : '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier, ou la recherche a pris trop de temps : réessaie si besoin).';
     }catch(err){
       console.error('Scan live impossible', err);
       statusEl.className = 'scan-status err';
-      const msg = String(err && err.message || '');
-      if(msg==='parse-vide' || msg==='Réponse inattendue'){
-        statusEl.textContent = "⚠️ La recherche a bien été lancée mais la réponse n'était pas exploitable (le modèle n'a pas renvoyé de liste claire). Retente — ça passe généralement à la 2ᵉ tentative — ou utilise les liens ci-dessous.";
-      } else {
-        statusEl.textContent = "⚠️ Le scan n'a pas pu s'exécuter ici — probablement parce que ce dossier est ouvert en fichier téléchargé et non comme fichier vivant dans Claude.ai (qui seul permet à ce bouton d'atteindre le web). Reviens dans une conversation Claude pour relancer un scan à la main, ou utilise les liens juste au-dessus.";
-      }
+      statusEl.textContent = "⚠️ Le scan n'a pas pu joindre le web ici — probablement parce que ce dossier est ouvert en fichier téléchargé et non comme fichier vivant dans Claude.ai (qui seul permet à ce bouton d'atteindre le web). Reviens dans une conversation Claude pour relancer un scan à la main, ou utilise les liens juste au-dessus.";
     }finally{
       btn.disabled = false;
       btn.textContent = originalLabel;
@@ -1204,6 +1251,16 @@ Réponds UNIQUEMENT avec un tableau JSON valide, sans aucun texte avant/après n
 
   init();
 })();
+</script>
+<script>
+  // Enregistrement du service worker — indépendant de l'app principale, jamais bloquant.
+  // Nécessite un vrai hébergement HTTPS (GitHub Pages) pour s'activer ; ignoré silencieusement
+  // si servi en file:// (fichier ouvert directement) ou si le navigateur ne le supporte pas.
+  if('serviceWorker' in navigator && (location.protocol==='https:' || location.hostname==='localhost')){
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(()=>{ /* pas grave — l'app fonctionne sans */ });
+    });
+  }
 </script>
 </body>
 </html>

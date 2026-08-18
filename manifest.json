@@ -1,0 +1,16 @@
+{
+  "name": "Radar Alternance — BTS SIO SISR Rennes",
+  "short_name": "Radar Alternance",
+  "description": "Dossier de veille des annonces d'alternance BTS SIO SISR à Rennes, avec suivi de candidature.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0a0e0f",
+  "theme_color": "#0a0e0f",
+  "lang": "fr",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
