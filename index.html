@@ -143,6 +143,13 @@
   .scan-status{font-size:13px; line-height:1.5; margin:-2px 0 12px; min-height:0;}
   .scan-status.ok{color:var(--green);}
   .scan-status.err{color:var(--red);}
+  .btn.secondary{background:var(--surface); color:var(--cyan); border:1.5px solid var(--cyan);}
+  .btn.secondary:hover{background:var(--cyan); color:#062023;}
+  .badge.wide-badge{background:#7c3aed; color:#fff; border-color:#7c3aed; font-weight:700;}
+  .badge.niveau-badge{background:#0e7490; color:#fff; border-color:#0e7490; font-weight:700;}
+  .badge.new-badge{background:#16a34a; color:#fff; border-color:#16a34a; font-weight:700; animation: pulse-new 1.5s ease-in-out 3;}
+  @keyframes pulse-new{ 0%,100%{opacity:1;} 50%{opacity:0.5;} }
+  .card.card-new{ border-color:#16a34a; box-shadow:0 0 0 2px #16a34a55; }
   .badge.cyber{color:#062023; background:var(--cyan); border-color:var(--cyan); font-weight:700;}
 
   /* ---------- STATS ---------- */
@@ -366,9 +373,10 @@
 
       <p><b>🔎 Recherche du 18/08/2026 — résultats :</b> aucune annonce publiée en août 2026 pour une alternance "BTS SIO SISR – rentrée 2027" à Rennes (trop tôt). En revanche, deux nouvelles pistes de formation identifiées : <b>ESNA Rennes/Bruz</b> — BTS SIO SISR en apprentissage 2 ans, accessible Bac STI2D, prépa cybersécurité intégrée, rythme 2 sem. entreprise / 2 sem. formation ; <b>CMA Formation Bruz</b> (~15 min de Rennes) — BTS SIO réseaux &amp; cybersécurité en alternance, phase complémentaire 2026 ouverte jusqu'au 10/09/2026. <b>Rennes Métropole</b> confirmée cible prioritaire (offre 2026 close le 12/04 — preuve qu'ils recrutent ce profil). Entreprises rennaises à cibler en candidature spontanée : ACCEIS, Nomios, SERMA Safety &amp; Security, Axido, ASF Informatique, CYBERDREAM Solutions, Cyber Dev, Secure-IC, Airbus CyberSecurity. 💡 Conseil : chercher en priorité les intitulés <i>Technicien informatique / systèmes et réseaux / support / infrastructure / support &amp; cybersécurité</i> plutôt que "cybersécurité" seul — c'est là que se trouvent les alternances accessibles après le Bac pour un BTS SIO SISR.</p>
 
-      <p>🔎 <b>Scan IA à la demande :</b> le bouton ci-dessous relance une vraie recherche web (via Groq, modèle avec recherche web intégrée) et ajoute automatiquement les nouvelles annonces trouvées au dossier, y compris hors CFA. <b>Fonctionne partout</b> — fichier téléchargé, GitHub Pages, PWA installée — plus besoin d'ouvrir ce dossier dans Claude.ai. Il faut juste une clé API Groq gratuite, à coller une seule fois via <b>🔑 Clé API</b>. Le widget juste en dessous, lui, ne demande aucune clé.</p>
+      <p>🔎 <b>Scan IA à la demande :</b> deux modes disponibles — <b>Ciblé</b> (partenaires et employeurs déjà repérés à Rennes) et <b>Élargi</b> (recherche libre sur tout le web, tous CFA/employeurs inconnus, et formations au-delà du BTS : Bachelor, Licence Pro, Master cybersécurité en alternance à Rennes pour préparer le Bac+5 de Simon). Les nouvelles annonces sont ajoutées automatiquement au dossier avec un badge 🆕. Il faut une clé API Groq gratuite, à coller une seule fois via <b>🔑 Clé API</b>.</p>
       <div class="scan-actions">
-        <button class="btn primary" id="scanNowBtn" type="button">🔎 Scanner maintenant (IA)</button>
+        <button class="btn primary" id="scanNowBtn" type="button">🔎 Scanner — Ciblé</button>
+        <button class="btn secondary" id="scanWideBtn" type="button">🌐 Scanner — Élargi</button>
         <button class="btn ghost" id="configKeyBtn" type="button">🔑 Clé API</button>
       </div>
       <div class="scan-status" id="scanStatus"></div>
@@ -899,10 +907,16 @@
     grid.innerHTML = items.map(item=>{
       const st = getState(item.id);
       const statusDef = STATUS_MAP[st.status] || STATUS[0];
+      const isNew = item.isNew && item.addedAt && (Date.now() - item.addedAt < 86400000);
+      const isWide = item.scanMode === 'wide';
+      const niveauCible = item.niveauCible && item.niveauCible !== 'BTS' ? item.niveauCible : null;
       return `
-      <div class="card ${statusDef.cls}" data-id="${escapeHtml(item.id)}">
+      <div class="card ${statusDef.cls}${isNew?' card-new':''}" data-id="${escapeHtml(item.id)}">
         <div class="card-top">
           <div class="badges">
+            ${isNew ? `<span class="badge new-badge">🆕 NOUVEAU</span>` : ''}
+            ${isWide ? `<span class="badge wide-badge">🌐 ÉLARGI</span>` : ''}
+            ${niveauCible ? `<span class="badge niveau-badge">${escapeHtml(niveauCible)}</span>` : ''}
             ${item.ref ? `<span class="badge">${escapeHtml(item.ref)}</span>` : ''}
             <span class="badge cycle">rentrée ${escapeHtml(item.cycle)}</span>
             ${!item.cfa ? `<span class="badge direct">🏢 CANDIDATURE DIRECTE</span>` : ''}
@@ -1182,8 +1196,8 @@
     if(el && lastScanDate) el.textContent = lastScanDate;
   }
 
-  async function scanLive(){
-    const btn = document.getElementById('scanNowBtn');
+  async function scanLive(mode = 'targeted'){
+    const btn = mode === 'wide' ? document.getElementById('scanWideBtn') : document.getElementById('scanNowBtn');
     const statusEl = document.getElementById('scanStatus');
 
     const key = groqApiKey || await loadGroqKey();
@@ -1196,19 +1210,30 @@
     }
 
     btn.disabled = true;
+    document.getElementById('scanNowBtn').disabled = true;
+    document.getElementById('scanWideBtn').disabled = true;
     const originalLabel = btn.textContent;
-    btn.textContent = '🔎 Recherche en cours…';
+    btn.textContent = mode === 'wide' ? '🌐 Recherche élargie…' : '🔎 Recherche en cours…';
     statusEl.className = 'scan-status';
     statusEl.textContent = '';
 
-    // On n'envoie que l'essentiel (entreprise+poste) pour la dédup, max 15 entrées → prompt léger
     const knownShort = allListings().slice(0,10).map(i=>`${i.entreprise}|${i.poste}`).join('\n');
-    const prompt = `Offres alternance BTS SIO SISR Rennes (35) ou -1h, rentrée 2027. Sources : AFTEC, MyDigitalSchool, ESNA, CMA Bruz, Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole, SNCF, ACCEIS, Nomios, Axido, Airbus Cyber.
+
+    const promptTargeted = `Offres alternance à Rennes (35) ou -1h, rentrée 2027. Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure, Technicien réseau, Technicien support & cybersécurité. Sources : AFTEC, MyDigitalSchool, ESNA, CMA Bruz, Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole, SNCF, ACCEIS, Nomios, Axido, Airbus Cyber. Priorité aux offres accessibles après le Bac (accessibleBac:true).
 
 Déjà au dossier :
 ${knownShort}
 
 JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, lien, secteur, missions. Max 3 nouvelles. Si rien : [].`;
+
+    const promptWide = `Recherche web libre : offres alternance informatique/cybersécurité Rennes (35) ou -1h, rentrée 2027. Tous niveaux : BTS SIO SISR (accessible Bac), Bachelor, Licence Pro, Master cybersécurité (Bac+3 à Bac+5). Cherche aussi intitulés : Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier.
+
+Déjà au dossier :
+${knownShort}
+
+JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, lien, secteur, missions, niveauCible (BTS/Bachelor/Licence Pro/Master). Max 3 nouvelles. Si rien : [].`;
+
+    const prompt = mode === 'wide' ? promptWide : promptTargeted;
 
     try{
       const text = await callGroqWithSearch(prompt);
@@ -1232,7 +1257,10 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
           echeance:it.echeance||'', debut:it.debut||'',
           email:it.email||null, lien:it.lien||'#',
           secteur:it.secteur||'', cycle: /2027/.test((it.datePublication||'')+(it.echeance||'')+(it.debut||'')) ? '2027' : '2026',
-          missions:it.missions||''
+          missions:it.missions||'',
+          niveauCible: it.niveauCible||'BTS',
+          scanMode: mode,
+          isNew: true, addedAt: Date.now()
         });
         added++;
       });
@@ -1241,6 +1269,14 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
       scheduleSave();
       renderAll();
       updateScanHead();
+
+      // Scroll vers la première nouvelle annonce
+      if(added > 0){
+        setTimeout(()=>{
+          const newCard = document.querySelector('.card.card-new');
+          if(newCard) newCard.scrollIntoView({ behavior:'smooth', block:'center' });
+        }, 150);
+      }
 
       statusEl.className = 'scan-status ok';
       statusEl.textContent = added>0
@@ -1263,6 +1299,8 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
       }
     }finally{
       btn.disabled = false;
+      document.getElementById('scanNowBtn').disabled = false;
+      document.getElementById('scanWideBtn').disabled = false;
       btn.textContent = originalLabel;
     }
   }
@@ -1313,7 +1351,8 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
     document.getElementById('confirmAdd').addEventListener('click', addListing);
     document.getElementById('modalOverlay').addEventListener('click', e=>{ if(e.target.id==='modalOverlay') closeModal(); });
 
-    document.getElementById('scanNowBtn').addEventListener('click', scanLive);
+    document.getElementById('scanNowBtn').addEventListener('click', ()=>scanLive('targeted'));
+    document.getElementById('scanWideBtn').addEventListener('click', ()=>scanLive('wide'));
     document.getElementById('exportBtn').addEventListener('click', exportCsv);
     document.getElementById('resetBtn').addEventListener('click', resetTracking);
 
