@@ -1202,13 +1202,13 @@
     statusEl.textContent = '';
 
     // On n'envoie que l'essentiel (entreprise+poste) pour la dédup, max 15 entrées → prompt léger
-    const knownShort = allListings().slice(0,15).map(i=>`${i.entreprise} – ${i.poste}`).join('\n');
-    const prompt = `Cherche sur le web des offres RÉELLES d'alternance BTS SIO SISR à Rennes (35) ou -1h, rentrée 2026-2027. Cherche chez ces sources : AFTEC Rennes, MyDigitalSchool Rennes, ESNA Rennes/Bruz, CMA Formation Bruz, Ynov Rennes, ESUP Rennes, Pôle BTS Alternance Rennes, La bonne alternance (labonnealternance.apprentissage.beta.gouv.fr), Hellowork, Indeed, LinkedIn, Rennes Métropole, Région Bretagne, emploi-territorial.fr, SNCF, ACCEIS, Nomios, SERMA, Axido, ASF Informatique, CYBERDREAM, Cyber Dev, Secure-IC, Airbus CyberSecurity.
+    const knownShort = allListings().slice(0,10).map(i=>`${i.entreprise}|${i.poste}`).join('\n');
+    const prompt = `Offres alternance BTS SIO SISR Rennes (35) ou -1h, rentrée 2027. Sources : AFTEC, MyDigitalSchool, ESNA, CMA Bruz, Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole, SNCF, ACCEIS, Nomios, Axido, Airbus Cyber.
 
-Déjà au dossier (ne pas renvoyer) :
+Déjà au dossier :
 ${knownShort}
 
-Réponds UNIQUEMENT avec un tableau JSON valide ([ ... ]), sans texte autour. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac (bool), salaire, datePublication (YYYY-MM-DD), echeance, debut, email, lien, secteur, missions (1 phrase). Max 3 annonces nouvelles. Si rien : [].`;
+JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, lien, secteur, missions. Max 3 nouvelles. Si rien : [].`;
 
     try{
       const text = await callGroqWithSearch(prompt);
