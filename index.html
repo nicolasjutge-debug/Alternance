@@ -285,8 +285,9 @@
     background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
     padding:14px 16px; font-size:13px;
   }
-  .cfa-card .name{font-family:var(--mono); font-weight:700; font-size:13.5px; margin-bottom:6px;}
-  .cfa-card .note{color:var(--text-dim); margin-bottom:10px;}
+  .cfa-card.cfa-custom{ border-left:3px solid var(--cyan); }
+  .cfa-card .name{ font-family:var(--mono); font-weight:700; font-size:13.5px; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+  .cfa-card .note{color:var(--text-dim); margin-bottom:10px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical;}
   .cfa-card a{font-size:12.5px;}
 
   /* ---------- MODAL ---------- */
@@ -412,6 +413,9 @@
     <div class="search-box">
       <input type="text" id="searchInput" placeholder="Rechercher (poste, secteur, ville, mots-clés)…">
     </div>
+    <select id="partnerFilter">
+      <option value="all">Tous les CFA / employeurs</option>
+    </select>
     <select id="cycleFilter">
       <option value="all">Toutes les rentrées</option>
       <option value="2026">2026 (pistes)</option>
@@ -427,8 +431,9 @@
       <option value="ville">Ville (A→Z)</option>
       <option value="statut">Statut</option>
     </select>
-    <label class="chk"><input type="checkbox" id="bacOnly"> ⭐ Accessible Bac uniquement</label>
-    <label class="chk"><input type="checkbox" id="hideArchived" checked> Masquer archivées</label>
+    <label class="chk"><input type="checkbox" id="bacOnly"> ⭐ Accessible Bac</label>
+    <label class="chk"><input type="checkbox" id="hideArchived" checked> Masquer archivées/pourvues</label>
+    <button class="btn ghost" id="showArchivedBtn" style="font-size:12.5px;">📦 Voir archivées</button>
     <button class="btn primary" id="addBtn">+ Ajouter une annonce</button>
   </div>
 
@@ -440,6 +445,14 @@
   </div>
   <p class="section-sub">Ces établissements forment au BTS SIO SISR en alternance à Rennes et gèrent eux-mêmes la mise en relation avec leurs entreprises partenaires. Aucune annonce individuelle "2027" n'existe encore chez eux — l'idée est de les recontacter directement (ou de candidater à leur formation) quand la recherche d'entreprise pour 2027 s'ouvrira, en général à partir de janvier–mars 2027.</p>
   <div class="cfa-grid" id="cfaGrid"></div>
+
+  <div id="empSection" style="display:none;">
+    <div class="section-head" style="margin-top:28px;">
+      <h2>🏢 Employeurs repérés via scan élargi</h2>
+    </div>
+    <p class="section-sub">Entreprises hors CFA détectées automatiquement — à contacter en candidature spontanée.</p>
+    <div class="cfa-grid" id="empGrid"></div>
+  </div>
 
   <div class="section-head">
     <h2>Carte interactive</h2>
@@ -462,8 +475,8 @@
 
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal">
-    <h3>Ajouter une annonce</h3>
-    <div class="modal-sub">Pour une vraie annonce trouvée ailleurs (2026 ou 2027). Les champs marqués * sont recommandés.</div>
+    <h3 id="modalTitle">Ajouter une annonce</h3>
+    <div class="modal-sub" id="modalSub">Pour une vraie annonce trouvée ailleurs (2026 ou 2027). Les champs marqués * sont recommandés.</div>
     <div class="field"><label>Poste *</label><input id="f-poste" placeholder="ex : Alternant technicien réseaux"></div>
     <div class="field"><label>Entreprise *</label><input id="f-entreprise" placeholder="Nom, ou « partenaire via [CFA] » si non communiqué"></div>
     <div class="field"><label>Via un CFA ?</label><input id="f-cfa" placeholder="Nom du CFA si l'offre passe par un CFA — laisser vide si hors CFA (candidature directe)"></div>
@@ -484,13 +497,28 @@
       <div class="field"><label>Salaire</label><input id="f-salaire" placeholder="Grille légale / montant si indiqué"></div>
       <div class="field"><label>Date publication</label><input id="f-date" type="date"></div>
     </div>
-    <div class="field"><label>Échéance / date limite</label><input id="f-echeance" placeholder="ex : au fil de l'eau, ou date précise"></div>
-    <div class="field"><label>Email de contact</label><input id="f-email" placeholder="si publié sur l'annonce"></div>
+    <div class="field-row">
+      <div class="field"><label>Échéance / date limite</label><input id="f-echeance" placeholder="ex : au fil de l'eau, ou date précise"></div>
+      <div class="field"><label>Début du contrat</label><input id="f-debut" placeholder="ex : Septembre 2027"></div>
+    </div>
+    <div class="field"><label>Email de contact</label><input id="f-email" type="email" placeholder="si publié sur l'annonce"></div>
     <div class="field"><label>Lien officiel pour candidater *</label><input id="f-lien" placeholder="https://…"></div>
     <div class="field"><label>Notes / missions</label><textarea id="f-missions"></textarea></div>
     <div class="modal-actions">
       <button class="btn ghost" id="cancelAdd">Annuler</button>
       <button class="btn primary" id="confirmAdd">Ajouter au dossier</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="newPartnerOverlay">
+  <div class="modal" style="max-width:480px;">
+    <h3 id="newPartnerTitle">🆕 Nouveau partenaire détecté</h3>
+    <div class="modal-sub" id="newPartnerSub"></div>
+    <div id="newPartnerList" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="skipPartners">Ignorer</button>
+      <button class="btn primary" id="confirmPartners">Ajouter la sélection</button>
     </div>
   </div>
 </div>
@@ -750,6 +778,8 @@
 
   let itemStates = {};   // { id: {status, notes} }
   let customListings = [];
+  let customCfa = [];        // CFA ajoutés via scan élargi
+  let customEmployeurs = []; // Employeurs hors CFA ajoutés via scan élargi
   let lastScanDate = null;
   let saveTimer = null;
 
@@ -804,6 +834,8 @@
         const parsed = JSON.parse(res.value);
         itemStates = parsed.itemStates || {};
         customListings = parsed.customListings || [];
+        customCfa = parsed.customCfa || [];
+        customEmployeurs = parsed.customEmployeurs || [];
         lastScanDate = parsed.lastScanDate || null;
       }catch(e){ /* donnée corrompue — état par défaut conservé */ }
     }
@@ -815,7 +847,7 @@
   }
 
   async function persistState(){
-    const ok = await safeStorageSet(STORAGE_KEY, JSON.stringify({itemStates, customListings, lastScanDate}));
+    const ok = await safeStorageSet(STORAGE_KEY, JSON.stringify({itemStates, customListings, customCfa, customEmployeurs, lastScanDate}));
     if(ok) flashSaved();
   }
 
@@ -831,7 +863,11 @@
   }
 
   /* ============ RENDER ============ */
-  function allListings(){ return [...BASE_LISTINGS, ...customListings]; }
+  function allListings(){
+    const editedBaseIds = new Set(customListings.filter(x=>x._editedBase).map(x=>x.id));
+    const base = BASE_LISTINGS.filter(x=>!editedBaseIds.has(x.id));
+    return [...base, ...customListings];
+  }
 
   function escapeHtml(s){
     return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -853,10 +889,38 @@
     `;
   }
 
+  function truncate(str, max){ return str.length > max ? str.slice(0, max-1) + '…' : str; }
+
+  function populatePartnerFilter(){
+    const sel = document.getElementById('partnerFilter');
+    const current = sel.value;
+
+    // Collecte tous les CFA et employeurs distincts présents dans les annonces
+    const cfaSet = new Map();
+    const empSet = new Map();
+    allListings().forEach(i=>{
+      if(i.cfa) cfaSet.set(i.cfa.toLowerCase(), i.cfa);
+      else if(i.entreprise) empSet.set(i.entreprise.toLowerCase(), i.entreprise);
+    });
+
+    const cfaOptions = [...cfaSet.values()].sort();
+    const empOptions = [...empSet.values()].sort();
+
+    sel.innerHTML = `<option value="all">Tous les CFA / employeurs</option>`
+      + (cfaOptions.length ? `<optgroup label="🎓 Via CFA">${cfaOptions.map(n=>`<option value="cfa:${escapeHtml(n)}"${current===`cfa:${n}`?'selected':''}>${escapeHtml(truncate(n,32))}</option>`).join('')}</optgroup>` : '')
+      + (empOptions.length ? `<optgroup label="🏢 Employeurs directs">${empOptions.map(n=>`<option value="emp:${escapeHtml(n)}"${current===`emp:${n}`?'selected':''}>${escapeHtml(truncate(n,32))}</option>`).join('')}</optgroup>` : '');
+
+    // Rétablir la sélection si toujours valide
+    if(current && current !== 'all' && sel.querySelector(`option[value="${CSS.escape(current)}"]`)){
+      sel.value = current;
+    }
+  }
+
   function matchesFilters(item){
     const q = document.getElementById('searchInput').value.trim().toLowerCase();
     const cycle = document.getElementById('cycleFilter').value;
     const source = document.getElementById('sourceFilter').value;
+    const partner = document.getElementById('partnerFilter').value;
     const bacOnly = document.getElementById('bacOnly').checked;
     const hideArchived = document.getElementById('hideArchived').checked;
     const st = getState(item.id).status;
@@ -866,6 +930,11 @@
     if(cycle!=='all' && item.cycle!==cycle) return false;
     if(source==='cfa' && !item.cfa) return false;
     if(source==='direct' && item.cfa) return false;
+    if(partner !== 'all'){
+      const [kind, name] = partner.split(':').map((s,i)=> i===0 ? s : partner.slice(partner.indexOf(':')+1));
+      if(kind==='cfa' && (item.cfa||'').toLowerCase() !== name.toLowerCase()) return false;
+      if(kind==='emp' && (item.cfa || (item.entreprise||'').toLowerCase() !== name.toLowerCase())) return false;
+    }
     if(q){
       const hay = [item.poste,item.entreprise,item.lieu,item.secteur,item.missions,item.niveau].join(' ').toLowerCase();
       if(!hay.includes(q)) return false;
@@ -937,7 +1006,9 @@
         </div>
         ${item.missions ? `<div class="missions">${escapeHtml(item.missions)}</div>` : ''}
         <div class="card-links">
-          <a href="${escapeHtml(item.lien)}" target="_blank" rel="noopener noreferrer">🔗 Lien officiel pour candidater</a>
+          <a href="${escapeHtml(item.lien)}" target="_blank" rel="noopener noreferrer">🔗 Lien officiel</a>
+          ${item.email ? `<a href="mailto:${escapeHtml(item.email)}">✉️ ${escapeHtml(item.email)}</a>` : ''}
+          <button class="btn ghost edit-btn" data-id="${escapeHtml(item.id)}" style="font-size:12.5px;padding:6px 10px;">✏️ Modifier</button>
         </div>
         <div class="track">
           <div class="track-row">
@@ -955,6 +1026,10 @@
       </div>`;
     }).join('');
 
+    grid.querySelectorAll('.edit-btn').forEach(btn=>{
+      btn.addEventListener('click', ()=> openModal(btn.dataset.id));
+    });
+
     grid.querySelectorAll('.card').forEach(card=>{
       const id = card.dataset.id;
       card.querySelector('.status-select').addEventListener('change', e=>{
@@ -970,15 +1045,58 @@
     });
   }
 
+  /* ============ MODALE NOUVEAU PARTENAIRE ============ */
+  let _pendingCfas = [], _pendingEmps = [];
+
+  function showNewPartnerModal(newCfas, newEmps){
+    _pendingCfas = newCfas; _pendingEmps = newEmps;
+    const total = newCfas.length + newEmps.length;
+    document.getElementById('newPartnerTitle').textContent = `🆕 ${total} nouveau${total>1?'x':''} partenaire${total>1?'s':''} détecté${total>1?'s':''}`;
+    document.getElementById('newPartnerSub').textContent = 'Le scan élargi a trouvé des structures absentes de vos listes. Cochez celles à ajouter :';
+    document.getElementById('newPartnerList').innerHTML = [
+      ...newCfas.map((c,i)=>`<label style="display:flex;align-items:flex-start;gap:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;">
+        <input type="checkbox" checked data-kind="cfa" data-idx="${i}" style="margin-top:3px;accent-color:var(--cyan);">
+        <span><b style="font-family:var(--mono);font-size:13px;">🎓 ${escapeHtml(c.nom)}</b><br><span style="font-size:12px;color:var(--text-dim);">CFA / école — ${escapeHtml(c.note)}</span></span></label>`),
+      ...newEmps.map((e,i)=>`<label style="display:flex;align-items:flex-start;gap:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;">
+        <input type="checkbox" checked data-kind="emp" data-idx="${i}" style="margin-top:3px;accent-color:var(--cyan);">
+        <span><b style="font-family:var(--mono);font-size:13px;">🏢 ${escapeHtml(e.nom)}</b><br><span style="font-size:12px;color:var(--text-dim);">Employeur hors CFA — ${escapeHtml(e.note)}</span></span></label>`)
+    ].join('');
+    document.getElementById('newPartnerOverlay').classList.add('open');
+  }
+
+  function confirmNewPartners(){
+    document.getElementById('newPartnerList').querySelectorAll('input[type=checkbox]:checked').forEach(cb=>{
+      const idx = parseInt(cb.dataset.idx);
+      if(cb.dataset.kind==='cfa' && _pendingCfas[idx]) customCfa.push({..._pendingCfas[idx], _custom:true});
+      if(cb.dataset.kind==='emp' && _pendingEmps[idx]) customEmployeurs.push({..._pendingEmps[idx], _custom:true});
+    });
+    document.getElementById('newPartnerOverlay').classList.remove('open');
+    _pendingCfas=[]; _pendingEmps=[];
+    scheduleSave(); renderAll();
+  }
+
+  function allCfa(){ return [...CFA_NETWORKS, ...customCfa]; }
+
   function renderCfa(){
-    document.getElementById('cfaCount').textContent = CFA_NETWORKS.length;
-    document.getElementById('cfaGrid').innerHTML = CFA_NETWORKS.map(c=>`
-      <div class="cfa-card">
-        <div class="name">${escapeHtml(c.nom)}</div>
+    const all = allCfa();
+    document.getElementById('cfaCount').textContent = all.length + ' établissements';
+    document.getElementById('cfaGrid').innerHTML = all.map(c=>`
+      <div class="cfa-card${c._custom?' cfa-custom':''}">
+        <div class="name">${c._custom?'🆕 ':''}${escapeHtml(c.nom)}</div>
         <div class="note">${escapeHtml(c.note)}</div>
         <a href="${escapeHtml(c.lien)}" target="_blank" rel="noopener noreferrer">Voir le site →</a>
-      </div>
-    `).join('');
+      </div>`).join('');
+
+    const empSection = document.getElementById('empSection');
+    if(empSection){
+      empSection.style.display = customEmployeurs.length > 0 ? '' : 'none';
+      document.getElementById('empGrid').innerHTML = customEmployeurs.map(e=>`
+        <div class="cfa-card cfa-custom">
+          <div class="name">🏢 ${escapeHtml(e.nom)}</div>
+          <div class="note">${escapeHtml(e.note)}</div>
+          <a href="${escapeHtml(e.lien)}" target="_blank" rel="noopener noreferrer">Voir →</a>
+        </div>`).join('');
+    }
   }
 
   /* ============ CARTE INTERACTIVE ============ */
@@ -1055,7 +1173,7 @@
     }
   }
 
-  function renderAll(){ renderStats(); renderGrid(); renderCfa(); renderMap(); }
+  function renderAll(){ populatePartnerFilter(); renderStats(); renderGrid(); renderCfa(); renderMap(); }
 
   /* ============ TERMINAL TYPE EFFECT ============ */
   function typeTerminal(){
@@ -1072,41 +1190,101 @@
   }
 
   /* ============ MODAL ============ */
-  function openModal(){ document.getElementById('modalOverlay').classList.add('open'); }
-  function closeModal(){
-    document.getElementById('modalOverlay').classList.remove('open');
-    ['poste','entreprise','cfa','lieu','niveau','salaire','date','echeance','email','lien','missions'].forEach(f=>{
-      const el = document.getElementById('f-'+f); if(el) el.value='';
-    });
+  /* ============ MODAL AJOUT / ÉDITION ============ */
+  let editingId = null; // null = ajout, string = édition
+
+  function fillModalFields(item){
+    document.getElementById('f-poste').value       = item.poste || '';
+    document.getElementById('f-entreprise').value  = item.entreprise || '';
+    document.getElementById('f-cfa').value         = item.cfa || '';
+    document.getElementById('f-lieu').value        = item.lieu || '';
+    document.getElementById('f-cycle').value       = item.cycle || '2027';
+    document.getElementById('f-niveau').value      = item.niveau || '';
+    document.getElementById('f-bac').value         = item.accessibleBac ? 'oui' : 'non';
+    document.getElementById('f-salaire').value     = item.salaire || '';
+    document.getElementById('f-date').value        = item.datePublication || '';
+    document.getElementById('f-echeance').value    = item.echeance || '';
+    document.getElementById('f-debut').value       = item.debut || '';
+    document.getElementById('f-email').value       = item.email || '';
+    document.getElementById('f-lien').value        = item.lien === '#' ? '' : (item.lien || '');
+    document.getElementById('f-missions').value    = item.missions || '';
   }
 
-  function addListing(){
-    const poste = document.getElementById('f-poste').value.trim();
+  function openModal(id){
+    editingId = id || null;
+    const isEdit = !!editingId;
+    document.getElementById('modalTitle').textContent = isEdit ? '✏️ Modifier l\'annonce' : 'Ajouter une annonce';
+    document.getElementById('modalSub').textContent   = isEdit
+      ? 'Modifie les informations de cette annonce — email, lien, missions, dates…'
+      : 'Pour une vraie annonce trouvée ailleurs (2026 ou 2027). Les champs marqués * sont recommandés.';
+    document.getElementById('confirmAdd').textContent = isEdit ? 'Enregistrer les modifications' : 'Ajouter au dossier';
+
+    if(isEdit){
+      const item = allListings().find(x=>x.id===editingId);
+      if(item) fillModalFields(item);
+    } else {
+      ['poste','entreprise','cfa','lieu','niveau','salaire','date','echeance','debut','email','lien','missions'].forEach(f=>{
+        const el=document.getElementById('f-'+f); if(el) el.value='';
+      });
+      document.getElementById('f-cycle').value = '2027';
+      document.getElementById('f-bac').value = 'non';
+    }
+    document.getElementById('modalOverlay').classList.add('open');
+  }
+
+  function closeModal(){
+    document.getElementById('modalOverlay').classList.remove('open');
+    editingId = null;
+  }
+
+  function saveListing(){
+    const poste      = document.getElementById('f-poste').value.trim();
     const entreprise = document.getElementById('f-entreprise').value.trim();
-    const lien = document.getElementById('f-lien').value.trim();
-    if(!poste || !entreprise || !lien){
-      alert("Merci de renseigner au moins le poste, l'entreprise et le lien pour candidater.");
+    const lien       = document.getElementById('f-lien').value.trim();
+    if(!poste || !entreprise){
+      alert("Merci de renseigner au moins le poste et l'entreprise.");
       return;
     }
-    const id = 'custom-' + Date.now();
-    customListings.push({
-      id, ref:null,
-      poste, option:'',
-      entreprise,
-      cfa:document.getElementById('f-cfa').value.trim(), lieu:document.getElementById('f-lieu').value.trim(),
-      niveau:document.getElementById('f-niveau').value.trim(),
+
+    const fields = {
+      poste, entreprise,
+      cfa:           document.getElementById('f-cfa').value.trim(),
+      lieu:          document.getElementById('f-lieu').value.trim(),
+      cycle:         document.getElementById('f-cycle').value,
+      niveau:        document.getElementById('f-niveau').value.trim(),
       accessibleBac: document.getElementById('f-bac').value === 'oui',
-      salaire:document.getElementById('f-salaire').value.trim(),
-      datePublication:document.getElementById('f-date').value,
-      echeance:document.getElementById('f-echeance').value.trim(),
-      debut:'', email:document.getElementById('f-email').value.trim() || null,
-      lien, secteur:'', cycle:document.getElementById('f-cycle').value,
-      missions:document.getElementById('f-missions').value.trim()
-    });
+      salaire:       document.getElementById('f-salaire').value.trim(),
+      datePublication: document.getElementById('f-date').value,
+      echeance:      document.getElementById('f-echeance').value.trim(),
+      debut:         document.getElementById('f-debut').value.trim(),
+      email:         document.getElementById('f-email').value.trim() || null,
+      lien:          lien || '#',
+      missions:      document.getElementById('f-missions').value.trim()
+    };
+
+    if(editingId){
+      // Édition — on met à jour dans customListings ou BASE_LISTINGS
+      let idx = customListings.findIndex(x=>x.id===editingId);
+      if(idx !== -1){
+        customListings[idx] = { ...customListings[idx], ...fields };
+      } else {
+        // Annonce de base : on crée une copie dans customListings avec même id
+        const base = BASE_LISTINGS.find(x=>x.id===editingId);
+        if(base) customListings.push({ ...base, ...fields, _editedBase:true });
+      }
+    } else {
+      customListings.push({
+        id:'custom-'+Date.now(), ref:null, option:'', secteur:'',
+        isNew:false, ...fields
+      });
+    }
+
     scheduleSave();
     closeModal();
     renderAll();
   }
+
+  function addListing(){ saveListing(); } // compatibilité listener existant
 
   /* ============ CLÉ API GROQ (stockage local uniquement, jamais envoyée ailleurs qu'à Groq) ============ */
   const GROQ_KEY_STORAGE = 'sio_sisr_rennes_groq_key';
@@ -1276,6 +1454,35 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
         }, 150);
       }
 
+      // Détection nouveaux CFA / employeurs (scan élargi uniquement)
+      if(mode === 'wide' && found.length > 0){
+        const knownCfaNames = [...CFA_NETWORKS, ...customCfa].map(c=>c.nom.toLowerCase());
+        const knownEmpNames = customEmployeurs.map(e=>e.nom.toLowerCase());
+        const knownListingEmps = allListings().map(i=>i.entreprise.toLowerCase());
+
+        const newCfas = [];
+        const newEmps = [];
+
+        found.forEach(it=>{
+          if(!it) return;
+          const cfaNom = (it.cfa||'').trim();
+          const empNom = (it.entreprise||'').trim();
+
+          if(cfaNom && !knownCfaNames.some(n=>cfaNom.toLowerCase().includes(n) || n.includes(cfaNom.toLowerCase()))){
+            if(!newCfas.find(x=>x.nom===cfaNom))
+              newCfas.push({ nom:cfaNom, lien:it.lien||'#', note:`Repéré via scan élargi le ${new Date().toLocaleDateString('fr-FR')} — à valider.`, lat:null, lng:null });
+          }
+          if(empNom && !cfaNom && !knownEmpNames.some(n=>empNom.toLowerCase().includes(n) || n.includes(empNom.toLowerCase())) && !knownListingEmps.some(n=>empNom.toLowerCase()===n)){
+            if(!newEmps.find(x=>x.nom===empNom))
+              newEmps.push({ nom:empNom, lien:it.lien||'#', note:`Repéré via scan élargi le ${new Date().toLocaleDateString('fr-FR')} — à valider.` });
+          }
+        });
+
+        if(newCfas.length > 0 || newEmps.length > 0){
+          showNewPartnerModal(newCfas, newEmps);
+        }
+      }
+
       statusEl.className = 'scan-status ok';
       statusEl.textContent = added>0
         ? `✅ ${added} nouvelle${added>1?'s':''} annonce${added>1?'s':''} trouvée${added>1?'s':''} et ajoutée${added>1?'s':''} au dossier.`
@@ -1337,6 +1544,7 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
 
   /* ============ INIT ============ */
   function attachListeners(){
+    document.getElementById('partnerFilter').addEventListener('change', renderGrid);
     document.getElementById('searchInput').addEventListener('input', renderGrid);
     document.getElementById('cycleFilter').addEventListener('change', renderGrid);
     document.getElementById('sourceFilter').addEventListener('change', renderGrid);
@@ -1344,10 +1552,25 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
     document.getElementById('bacOnly').addEventListener('change', renderGrid);
     document.getElementById('hideArchived').addEventListener('change', renderGrid);
 
-    document.getElementById('addBtn').addEventListener('click', openModal);
+    document.getElementById('addBtn').addEventListener('click', ()=>openModal(null));
     document.getElementById('cancelAdd').addEventListener('click', closeModal);
-    document.getElementById('confirmAdd').addEventListener('click', addListing);
+    document.getElementById('confirmAdd').addEventListener('click', saveListing);
     document.getElementById('modalOverlay').addEventListener('click', e=>{ if(e.target.id==='modalOverlay') closeModal(); });
+
+    document.getElementById('showArchivedBtn').addEventListener('click', ()=>{
+      const cb = document.getElementById('hideArchived');
+      cb.checked = !cb.checked;
+      const btn = document.getElementById('showArchivedBtn');
+      btn.textContent = cb.checked ? '📦 Voir archivées' : '📦 Masquer archivées';
+      renderGrid();
+    });
+
+    document.getElementById('confirmPartners').addEventListener('click', confirmNewPartners);
+    document.getElementById('skipPartners').addEventListener('click', ()=>{
+      document.getElementById('newPartnerOverlay').classList.remove('open');
+      _pendingCfas=[]; _pendingEmps=[];
+    });
+    document.getElementById('newPartnerOverlay').addEventListener('click', e=>{ if(e.target.id==='newPartnerOverlay'){ document.getElementById('newPartnerOverlay').classList.remove('open'); _pendingCfas=[]; _pendingEmps=[]; } });
 
     document.getElementById('scanNowBtn').addEventListener('click', ()=>scanLive('targeted'));
     document.getElementById('scanWideBtn').addEventListener('click', ()=>scanLive('wide'));
