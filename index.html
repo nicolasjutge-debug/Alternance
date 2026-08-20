@@ -197,6 +197,11 @@
   .btn.primary{background:var(--red); border-color:var(--red); color:#160707; font-weight:600;}
   .btn.primary:hover{background:#ea6362;}
   .btn.ghost{background:transparent;}
+  .sync-dot{ display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--text-faint); flex-shrink:0; transition:background .3s; }
+  .sync-dot.ok{ background:var(--green); }
+  .sync-dot.err{ background:var(--red); }
+  .sync-dot.loading{ background:var(--amber); animation:sync-pulse .8s ease-in-out infinite; }
+  @keyframes sync-pulse{ 0%,100%{opacity:1} 50%{opacity:.35} }
   label.chk{
     display:inline-flex; align-items:center; gap:7px; font-size:13.5px; color:var(--text-dim);
     background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:9px 12px;
@@ -377,6 +382,7 @@
         <button class="btn primary" id="scanNowBtn" type="button">🔎 Scanner — Ciblé</button>
         <button class="btn secondary" id="scanWideBtn" type="button">🌐 Scanner — Élargi</button>
         <button class="btn ghost" id="configKeyBtn" type="button">🔑 Clé API</button>
+        <button class="btn ghost" id="syncBtn" type="button"><span id="syncDot" class="sync-dot" title="Synchro désactivée"></span>&nbsp;Synchro ☁️</button>
       </div>
       <div class="scan-status" id="scanStatus"></div>
       <div class="scan-links">
@@ -469,6 +475,9 @@
     Dossier constitué à partir de recherches web, dernière mise à jour le 18/08/2026 (AFTEC Rennes — 289 offres informatique parcourues, MyDigitalSchool Rennes, ESNA Rennes/Bruz, CMA Formation Bruz, Hellowork, La bonne alternance, Rennes Métropole, Région Bretagne / emploi-territorial.fr, entreprises cyber rennaises). Les annonces d'alternance changent vite et certaines des 16 annonces 2026 ci-dessus peuvent déjà être pourvues ou closes (c'est le cas confirmé des 3 annonces hors CFA) au moment où tu lis ceci — elles restent utiles comme indicateur des employeurs actifs sur ce type de poste.
     <br><br>
     <button class="btn ghost" id="exportBtn">⭳ Exporter en CSV</button>
+    <button class="btn ghost" id="downloadBackupBtn">💾 Télécharger une sauvegarde</button>
+    <button class="btn ghost" id="restoreBackupBtn">📤 Restaurer une sauvegarde</button>
+    <input type="file" id="restoreFileInput" accept="application/json,.json" style="display:none;">
     <button class="btn ghost" id="resetBtn">↺ Réinitialiser mon suivi (statuts/notes)</button>
   </footer>
 </div>
@@ -536,8 +545,22 @@
   </div>
 </div>
 
-<script>
-(function(){
+<div class="modal-overlay" id="syncModalOverlay">
+  <div class="modal">
+    <h3>☁️ Synchronisation entre appareils</h3>
+    <div class="modal-sub">Utilise <a href="https://jsonbin.io" target="_blank" rel="noopener noreferrer">JSONBin.io</a> (compte gratuit) comme cloud partagé entre iPhone et PC. Crée un compte, copie ta <b>Master Key</b>, laisse le champ Bin ID vide — l'app le crée automatiquement. Sur les autres appareils, entre la même clé + le même Bin ID.</div>
+    <div class="field"><label>Master Key JSONBin <small style="font-weight:400;color:var(--text-faint);">(commence par $2a$)</small></label><input id="f-sync-key" type="password" autocomplete="off" spellcheck="false" placeholder="$2a$10$..."></div>
+    <div class="field"><label>Bin ID <small style="font-weight:400;color:var(--text-faint);">(laisser vide pour en créer un nouveau automatiquement)</small></label><input id="f-sync-bin" autocomplete="off" spellcheck="false" placeholder="64f3a1b2c5d6e7f8…"></div>
+    <div id="syncModalStatus" style="font-size:12.5px;min-height:18px;margin-top:-4px;"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="clearSync" style="margin-right:auto;">Désactiver</button>
+      <button class="btn ghost" id="cancelSync">Annuler</button>
+      <button class="btn primary" id="confirmSync">Connecter</button>
+    </div>
+  </div>
+</div>
+
+<script>(function(){
 
   /* ============ DONNÉES DE BASE (annonces réelles — recherche initiale 15/08/2026, scan élargi 16/08/2026, sources hors CFA ajoutées 16/08/2026 : Rennes Métropole + Région Bretagne) ============ */
   const BASE_LISTINGS = [
@@ -780,8 +803,11 @@
   let customListings = [];
   let customCfa = [];        // CFA ajoutés via scan élargi
   let customEmployeurs = []; // Employeurs hors CFA ajoutés via scan élargi
+  let hiddenIds = [];        // Annonces (de base ou custom) supprimées manuellement par l'utilisateur
   let lastScanDate = null;
   let saveTimer = null;
+  let cloudPushTimer = null;
+
 
   /* ============ STORAGE (avec garde-fou anti-blocage) ============ */
   // window.storage (fichier vivant dans Claude.ai) n'existe pas hors Claude.ai (fichier téléchargé,
@@ -827,6 +853,136 @@
     });
   }
 
+
+  /* ============ SYNC CLOUD — JSONBin (partagé iPhone ↔ PC) ============ */
+  const SYNC_CONFIG_KEY = 'sio_sisr_rennes_sync_cfg';
+  let syncCfg = null; // { apiKey, binId } — stocké en localStorage device par device, jamais dans le bin
+  const JSONBIN = 'https://api.jsonbin.io/v3/b';
+
+  function loadSyncCfg(){
+    try{ const r = localStorage.getItem(SYNC_CONFIG_KEY); syncCfg = r ? JSON.parse(r) : null; }
+    catch(e){ syncCfg = null; }
+    updateSyncDot();
+  }
+  function saveSyncCfg(cfg){
+    syncCfg = cfg;
+    try{ cfg ? localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(cfg)) : localStorage.removeItem(SYNC_CONFIG_KEY); }
+    catch(e){}
+    updateSyncDot();
+  }
+  function setSyncStatus(state, msg){
+    const dot = document.getElementById('syncDot');
+    if(dot){ dot.className = 'sync-dot' + (state ? ' '+state : ''); dot.title = msg || ''; }
+  }
+  function updateSyncDot(){
+    setSyncStatus(syncCfg ? 'ok' : '', syncCfg ? '☁️ Synchro active — connecté à JSONBin' : 'Synchro désactivée (données locales uniquement)');
+  }
+
+  async function cloudFetch(){
+    if(!syncCfg || !syncCfg.apiKey || !syncCfg.binId) return null;
+    try{
+      const r = await fetch(`${JSONBIN}/${syncCfg.binId}/latest`, {
+        headers:{ 'X-Master-Key': syncCfg.apiKey, 'X-Bin-Meta':'false' },
+        signal: AbortSignal.timeout(8000)
+      });
+      if(!r.ok) return null;
+      return await r.json();
+    }catch(e){ return null; }
+  }
+  async function cloudPush(){
+    if(!syncCfg || !syncCfg.apiKey || !syncCfg.binId){ return false; }
+    setSyncStatus('loading', 'Synchronisation en cours…');
+    const payload = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, lastScanDate, lastModified: Date.now() };
+    try{
+      const r = await fetch(`${JSONBIN}/${syncCfg.binId}`, {
+        method:'PUT', signal: AbortSignal.timeout(8000),
+        headers:{ 'Content-Type':'application/json', 'X-Master-Key': syncCfg.apiKey },
+        body: JSON.stringify(payload)
+      });
+      setSyncStatus(r.ok ? 'ok' : 'err', r.ok ? '☁️ Synchronisé' : '⚠️ Erreur cloud (PUT '+r.status+')');
+      return r.ok;
+    }catch(e){ setSyncStatus('err', '⚠️ JSONBin injoignable — modifs enregistrées localement'); return false; }
+  }
+  async function cloudCreate(apiKey){
+    const payload = { itemStates:{}, customListings:[], customCfa:[], customEmployeurs:[], hiddenIds:[], lastScanDate:null, lastModified:0 };
+    const r = await fetch(JSONBIN, {
+      method:'POST', signal: AbortSignal.timeout(10000),
+      headers:{ 'Content-Type':'application/json', 'X-Master-Key': apiKey, 'X-Bin-Name':'radar-alternance', 'X-Private-Bin':'true' },
+      body: JSON.stringify(payload)
+    });
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return (await r.json()).metadata.id;
+  }
+  async function syncFromCloud(){
+    if(!syncCfg || !syncCfg.apiKey || !syncCfg.binId) return;
+    setSyncStatus('loading', 'Récupération des données cloud…');
+    let localModified = 0;
+    try{ const raw = localStorage.getItem(STORAGE_KEY); if(raw){ localModified = JSON.parse(raw).lastModified || 0; } }catch(e){}
+    const cloud = await cloudFetch();
+    if(!cloud){ setSyncStatus('err', '⚠️ JSONBin injoignable — données locales affichées'); return; }
+    if((cloud.lastModified || 0) > localModified){
+      itemStates       = cloud.itemStates       || {};
+      customListings   = cloud.customListings   || [];
+      customCfa        = cloud.customCfa        || [];
+      customEmployeurs = cloud.customEmployeurs || [];
+      hiddenIds        = cloud.hiddenIds        || [];
+      lastScanDate     = cloud.lastScanDate     || null;
+      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify({ itemStates, customListings, customCfa, customEmployeurs, hiddenIds, lastScanDate, lastModified: cloud.lastModified })); }catch(e){}
+      renderAll(); updateScanHead();
+      setSyncStatus('ok', '☁️ Données cloud plus récentes — dossier mis à jour');
+    } else {
+      setSyncStatus('ok', '☁️ Synchronisé (données locales déjà à jour)');
+      // Pousser local → cloud si local est plus récent
+      if(localModified > (cloud.lastModified || 0)) cloudPush();
+    }
+  }
+
+  // Modal config synchro
+  function openSyncModal(){
+    document.getElementById('f-sync-key').value = syncCfg ? syncCfg.apiKey : '';
+    document.getElementById('f-sync-bin').value = syncCfg ? syncCfg.binId  : '';
+    document.getElementById('syncModalStatus').textContent = '';
+    document.getElementById('syncModalOverlay').classList.add('open');
+  }
+  function closeSyncModal(){ document.getElementById('syncModalOverlay').classList.remove('open'); }
+  async function confirmSyncConnect(){
+    const apiKey = document.getElementById('f-sync-key').value.trim();
+    const binField = document.getElementById('f-sync-bin');
+    let binId = binField.value.trim();
+    const statusEl = document.getElementById('syncModalStatus');
+    const btn = document.getElementById('confirmSync');
+    if(!apiKey){ statusEl.style.color='var(--red)'; statusEl.textContent='La Master Key est obligatoire.'; return; }
+    btn.disabled = true; btn.textContent = 'Connexion…';
+    statusEl.style.color = 'var(--amber)';
+    try{
+      if(!binId){
+        statusEl.textContent = 'Création du bin cloud…';
+        binId = await cloudCreate(apiKey);
+        binField.value = binId;
+        statusEl.style.color='var(--green)';
+        statusEl.textContent = '✅ Bin créé ! ID : ' + binId + ' — note-le pour configurer tes autres appareils.';
+        await new Promise(r=>setTimeout(r, 1200));
+      } else {
+        statusEl.textContent = 'Test de connexion…';
+      }
+      const test = await fetch(`${JSONBIN}/${binId}/latest`, { headers:{ 'X-Master-Key':apiKey, 'X-Bin-Meta':'false' }, signal: AbortSignal.timeout(8000) });
+      if(!test.ok){ statusEl.style.color='var(--red)'; statusEl.textContent='⚠️ Bin inaccessible (HTTP '+test.status+') — vérifie la clé et l’ID.'; return; }
+      statusEl.style.color='var(--green)'; statusEl.textContent='☁️ Connecté !';
+      saveSyncCfg({ apiKey, binId });
+      setTimeout(()=>{ closeSyncModal(); syncFromCloud(); }, 700);
+    }catch(e){
+      statusEl.style.color='var(--red)'; statusEl.textContent='⚠️ Erreur : '+(e.message||'impossible de joindre JSONBin');
+    }finally{ btn.disabled=false; btn.textContent='Connecter'; }
+  }
+  function clearSyncConfig(){
+    if(!confirm('Désactiver la synchronisation cloud sur cet appareil ? (Les données locales sont conservées.)')) return;
+    saveSyncCfg(null);
+    document.getElementById('f-sync-key').value='';
+    document.getElementById('f-sync-bin').value='';
+    const st = document.getElementById('syncModalStatus');
+    st.style.color='var(--text-faint)'; st.textContent='Synchro désactivée. Données locales conservées.';
+  }
+
   async function loadState(){
     const res = await safeStorageGet(STORAGE_KEY);
     if(res && res.value){
@@ -836,6 +992,7 @@
         customListings = parsed.customListings || [];
         customCfa = parsed.customCfa || [];
         customEmployeurs = parsed.customEmployeurs || [];
+        hiddenIds = parsed.hiddenIds || [];
         lastScanDate = parsed.lastScanDate || null;
       }catch(e){ /* donnée corrompue — état par défaut conservé */ }
     }
@@ -847,8 +1004,11 @@
   }
 
   async function persistState(){
-    const ok = await safeStorageSet(STORAGE_KEY, JSON.stringify({itemStates, customListings, customCfa, customEmployeurs, lastScanDate}));
+    const payload = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, lastScanDate, lastModified: Date.now() };
+    const ok = await safeStorageSet(STORAGE_KEY, JSON.stringify(payload));
     if(ok) flashSaved();
+    // Push cloud avec debounce (2s après la sauvegarde locale)
+    if(syncCfg){ clearTimeout(cloudPushTimer); cloudPushTimer = setTimeout(cloudPush, 2000); }
   }
 
   function flashSaved(){
@@ -865,8 +1025,27 @@
   /* ============ RENDER ============ */
   function allListings(){
     const editedBaseIds = new Set(customListings.filter(x=>x._editedBase).map(x=>x.id));
-    const base = BASE_LISTINGS.filter(x=>!editedBaseIds.has(x.id));
-    return [...base, ...customListings];
+    const base = BASE_LISTINGS.filter(x=>!editedBaseIds.has(x.id) && !hiddenIds.includes(x.id));
+    const custom = customListings.filter(x=>!hiddenIds.includes(x.id));
+    return [...base, ...custom];
+  }
+
+  function deleteListing(id){
+    const item = allListings().find(x=>x.id===id);
+    if(!item) return;
+    if(!confirm(`Supprimer « ${item.poste} — ${item.entreprise} » du dossier ?\n\nSon statut et ses notes seront aussi supprimés. Irréversible depuis l'app (mais récupérable via une sauvegarde si tu en as une).`)) return;
+
+    // Retire l'entrée custom (ajout manuel, trouvée par scan, ou édition d'une annonce de base)
+    const idx = customListings.findIndex(x=>x.id===id);
+    if(idx !== -1) customListings.splice(idx, 1);
+
+    // Si c'est (aussi) une annonce de base, il faut la masquer explicitement,
+    // sinon la fusion base+custom la ferait réapparaître.
+    if(BASE_LISTINGS.some(x=>x.id===id) && !hiddenIds.includes(id)) hiddenIds.push(id);
+
+    delete itemStates[id];
+    scheduleSave();
+    renderAll();
   }
 
   function escapeHtml(s){
@@ -1009,6 +1188,7 @@
           <a href="${escapeHtml(item.lien)}" target="_blank" rel="noopener noreferrer">🔗 Lien officiel</a>
           ${item.email ? `<a href="mailto:${escapeHtml(item.email)}">✉️ ${escapeHtml(item.email)}</a>` : ''}
           <button class="btn ghost edit-btn" data-id="${escapeHtml(item.id)}" style="font-size:12.5px;padding:6px 10px;">✏️ Modifier</button>
+          <button class="btn ghost delete-btn" data-id="${escapeHtml(item.id)}" style="font-size:12.5px;padding:6px 10px;">🗑️ Supprimer</button>
         </div>
         <div class="track">
           <div class="track-row">
@@ -1028,6 +1208,10 @@
 
     grid.querySelectorAll('.edit-btn').forEach(btn=>{
       btn.addEventListener('click', ()=> openModal(btn.dataset.id));
+    });
+
+    grid.querySelectorAll('.delete-btn').forEach(btn=>{
+      btn.addEventListener('click', ()=> deleteListing(btn.dataset.id));
     });
 
     grid.querySelectorAll('.card').forEach(card=>{
@@ -1372,6 +1556,9 @@
     if(el && lastScanDate) el.textContent = lastScanDate;
   }
 
+  // Hors-profil : filet de sécurité si le modèle renvoie quand même un poste commercial/vente malgré le prompt.
+  const OFF_TOPIC_POSTE_RX = /commercial|business\s*develop|charg[ée]\s+de\s+client[eè]le|conseiller\s+client[eè]le|\bvente\b|vendeur|prospection\s+commerciale|account\s+manager/i;
+
   async function scanLive(mode = 'targeted'){
     const btn = mode === 'wide' ? document.getElementById('scanWideBtn') : document.getElementById('scanNowBtn');
     const statusEl = document.getElementById('scanStatus');
@@ -1395,14 +1582,14 @@
 
     const knownShort = allListings().slice(0,10).map(i=>`${i.entreprise}|${i.poste}`).join('\n');
 
-    const promptTargeted = `Offres alternance à Rennes (35) ou -1h, rentrée 2027. Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure, Technicien réseau, Technicien support & cybersécurité. Sources : AFTEC, MyDigitalSchool, ESNA, CMA Bruz, Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole, SNCF, ACCEIS, Nomios, Axido, Airbus Cyber. Priorité aux offres accessibles après le Bac (accessibleBac:true).
+    const promptTargeted = `Offres alternance à Rennes (35) ou -1h, rentrée 2027. Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure, Technicien réseau, Technicien support & cybersécurité. Sources : AFTEC, MyDigitalSchool, ESNA, CMA Bruz, Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole, SNCF, ACCEIS, Nomios, Axido, Airbus Cyber. Priorité aux offres accessibles après le Bac (accessibleBac:true). Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels (administration systèmes/réseaux, support, exploitation, sécurité).
 
 Déjà au dossier :
 ${knownShort}
 
 JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, lien, secteur, missions. Max 3 nouvelles. Si rien : [].`;
 
-    const promptWide = `Recherche web libre : offres alternance informatique/cybersécurité Rennes (35) ou -1h, rentrée 2027. Tous niveaux : BTS SIO SISR (accessible Bac), Bachelor, Licence Pro, Master cybersécurité (Bac+3 à Bac+5). Cherche aussi intitulés : Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier.
+    const promptWide = `Recherche web libre : offres alternance informatique/cybersécurité Rennes (35) ou -1h, rentrée 2027. Tous niveaux : BTS SIO SISR (accessible Bac), Bachelor, Licence Pro, Master cybersécurité (Bac+3 à Bac+5). Cherche aussi intitulés : Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier. Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels.
 
 Déjà au dossier :
 ${knownShort}
@@ -1418,6 +1605,7 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
       let added = 0;
       found.forEach(it=>{
         if(!it || !it.poste || !it.entreprise) return;
+        if(OFF_TOPIC_POSTE_RX.test(it.poste)) return; // hors-profil (commercial/vente) — filtré même si le modèle l'a quand même renvoyé
         const isDup = allListings().some(x =>
           (x.lien && it.lien && x.lien===it.lien) ||
           (x.poste.toLowerCase()===String(it.poste).toLowerCase() && x.entreprise.toLowerCase()===String(it.entreprise).toLowerCase())
@@ -1531,13 +1719,65 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
     URL.revokeObjectURL(url);
   }
 
+  /* ============ SAUVEGARDE LOCALE (fichier .json téléchargeable — restaurable sur n'importe quel appareil) ============ */
+  function downloadBackup(){
+    const payload = {
+      app:'radar-alternance-sio-sisr', version:1, exportedAt:new Date().toISOString(),
+      itemStates, customListings, customCfa, customEmployeurs, hiddenIds, lastScanDate, lastModified: Date.now()
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const d = new Date();
+    const stamp = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    const a = document.createElement('a');
+    a.href = url; a.download = `radar-alternance-sauvegarde-${stamp}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function triggerRestoreBackup(){
+    document.getElementById('restoreFileInput').click();
+  }
+
+  async function handleRestoreFile(e){
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ''; // permet de resélectionner le même fichier une prochaine fois
+    if(!file) return;
+    let data;
+    try{
+      data = JSON.parse(await file.text());
+    }catch(err){
+      alert("⚠️ Fichier illisible ou corrompu — ce n'est pas un JSON valide.");
+      return;
+    }
+    if(!data || typeof data!=='object' || (!('itemStates' in data) && !('customListings' in data))){
+      alert("⚠️ Ce fichier ne ressemble pas à une sauvegarde de Radar Alternance.");
+      return;
+    }
+    const dateStr = data.exportedAt ? new Date(data.exportedAt).toLocaleString('fr-FR') : 'date inconnue';
+    if(!confirm(`Restaurer la sauvegarde du ${dateStr} ?\n\nToutes les données actuelles sur cet appareil (statuts, notes, annonces ajoutées) seront remplacées par celles du fichier.`)) return;
+    itemStates       = data.itemStates       || {};
+    customListings   = data.customListings   || [];
+    customCfa        = data.customCfa        || [];
+    customEmployeurs = data.customEmployeurs || [];
+    hiddenIds         = data.hiddenIds        || [];
+    lastScanDate      = data.lastScanDate     || null;
+    await persistState(); // sauvegarde locale + push cloud si synchro active (la restauration devient la version la plus récente)
+    renderAll();
+    updateScanHead();
+    alert('✅ Sauvegarde restaurée.');
+  }
+
   /* ============ RESET ============ */
   async function resetTracking(){
-    if(!confirm("Réinitialiser tous les statuts et notes ? Les annonces ajoutées manuellement (et celles trouvées par scan) seront aussi supprimées. Cette action est irréversible.")) return;
+    if(!confirm("Réinitialiser tous les statuts et notes ? Les annonces ajoutées manuellement (et celles trouvées par scan, y compris les CFA/employeurs découverts) seront aussi supprimées, et les annonces de base que tu as supprimées individuellement seront restaurées. Cette action est irréversible.")) return;
     itemStates = {};
     customListings = [];
+    customCfa = [];
+    customEmployeurs = [];
+    hiddenIds = [];
     lastScanDate = null;
-    await safeStorageSet(STORAGE_KEY, JSON.stringify({itemStates, customListings, lastScanDate}));
+    await persistState(); // sauvegarde locale complète + push cloud si synchro active
     document.getElementById('scanHeadDate').textContent = '16/08/2026';
     renderAll();
   }
@@ -1575,6 +1815,9 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
     document.getElementById('scanNowBtn').addEventListener('click', ()=>scanLive('targeted'));
     document.getElementById('scanWideBtn').addEventListener('click', ()=>scanLive('wide'));
     document.getElementById('exportBtn').addEventListener('click', exportCsv);
+    document.getElementById('downloadBackupBtn').addEventListener('click', downloadBackup);
+    document.getElementById('restoreBackupBtn').addEventListener('click', triggerRestoreBackup);
+    document.getElementById('restoreFileInput').addEventListener('change', handleRestoreFile);
     document.getElementById('resetBtn').addEventListener('click', resetTracking);
 
     document.getElementById('configKeyBtn').addEventListener('click', openKeyModal);
@@ -1582,6 +1825,12 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
     document.getElementById('confirmKey').addEventListener('click', confirmKeySave);
     document.getElementById('clearKey').addEventListener('click', clearKeySaved);
     document.getElementById('keyModalOverlay').addEventListener('click', e=>{ if(e.target.id==='keyModalOverlay') closeKeyModal(); });
+
+    document.getElementById('syncBtn').addEventListener('click', openSyncModal);
+    document.getElementById('cancelSync').addEventListener('click', closeSyncModal);
+    document.getElementById('confirmSync').addEventListener('click', confirmSyncConnect);
+    document.getElementById('clearSync').addEventListener('click', clearSyncConfig);
+    document.getElementById('syncModalOverlay').addEventListener('click', e=>{ if(e.target.id==='syncModalOverlay') closeSyncModal(); });
   }
 
   function init(){
@@ -1590,9 +1839,11 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
     renderAll();
     updateScanHead();
     attachListeners();
-    // 2) Chargement de la sauvegarde en tâche de fond (statuts/notes/annonces perso) ; re-rendu si trouvée.
-    loadState().then(()=>{ renderAll(); updateScanHead(); });
-    // 3) Clé API Groq, aussi en tâche de fond — jamais bloquant pour l'affichage.
+    // 2) Config synchro cloud (localStorage device, lecture synchrone).
+    loadSyncCfg();
+    // 3) Chargement local + sync cloud en cascade : local d'abord (rapide), puis cloud si plus récent.
+    loadState().then(()=>{ renderAll(); updateScanHead(); syncFromCloud(); });
+    // 4) Clé API Groq, aussi en tâche de fond.
     loadGroqKey();
   }
 
