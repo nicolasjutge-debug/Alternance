@@ -384,6 +384,7 @@
         <button class="btn ghost" id="configKeyBtn" type="button">🔑 Clé API</button>
         <button class="btn ghost" id="syncBtn" type="button"><span id="syncDot" class="sync-dot" title="Synchro désactivée"></span>&nbsp;Synchro ☁️</button>
       </div>
+      <div id="scanCooldownLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
       <div class="scan-status" id="scanStatus"></div>
       <div class="scan-links">
         <a href="https://www.aftec.fr/alternance-informatique" target="_blank" rel="noopener noreferrer">🎓 AFTEC — Informatique Rennes</a>
@@ -478,6 +479,7 @@
     <button class="btn ghost" id="downloadBackupBtn">💾 Télécharger une sauvegarde</button>
     <button class="btn ghost" id="restoreBackupBtn">📤 Restaurer une sauvegarde</button>
     <input type="file" id="restoreFileInput" accept="application/json,.json" style="display:none;">
+    <button class="btn ghost" id="trashBtn" type="button">🗑️ Corbeille</button>
     <button class="btn ghost" id="resetBtn">↺ Réinitialiser mon suivi (statuts/notes)</button>
   </footer>
 </div>
@@ -556,6 +558,18 @@
       <button class="btn ghost" id="clearSync" style="margin-right:auto;">Désactiver</button>
       <button class="btn ghost" id="cancelSync">Annuler</button>
       <button class="btn primary" id="confirmSync">Connecter</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="trashModalOverlay">
+  <div class="modal">
+    <h3>🗑️ Corbeille</h3>
+    <div class="modal-sub">Les annonces supprimées restent ici, restaurables à tout moment — rien n'est perdu tant que tu ne les purges pas une par une ou ne vides pas la corbeille.</div>
+    <div id="trashList" style="display:flex;flex-direction:column;gap:8px;max-height:340px;overflow-y:auto;margin:4px 0;"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="emptyTrashBtn" style="margin-right:auto;">Vider la corbeille</button>
+      <button class="btn primary" id="closeTrash">Fermer</button>
     </div>
   </div>
 </div>
@@ -804,6 +818,7 @@
   let customCfa = [];        // CFA ajoutés via scan élargi
   let customEmployeurs = []; // Employeurs hors CFA ajoutés via scan élargi
   let hiddenIds = [];        // Annonces (de base ou custom) supprimées manuellement par l'utilisateur
+  let trash = [];             // Corbeille : { item, deletedAt, wasBase, wasEditedBase } — restaurable, cap 30
   let lastScanDate = null;
   let saveTimer = null;
   let cloudPushTimer = null;
@@ -892,7 +907,7 @@
   async function cloudPush(){
     if(!syncCfg || !syncCfg.apiKey || !syncCfg.binId){ return false; }
     setSyncStatus('loading', 'Synchronisation en cours…');
-    const payload = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, lastScanDate, lastModified: Date.now() };
+    const payload = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: Date.now() };
     try{
       const r = await fetch(`${JSONBIN}/${syncCfg.binId}`, {
         method:'PUT', signal: AbortSignal.timeout(8000),
@@ -904,7 +919,7 @@
     }catch(e){ setSyncStatus('err', '⚠️ JSONBin injoignable — modifs enregistrées localement'); return false; }
   }
   async function cloudCreate(apiKey){
-    const payload = { itemStates:{}, customListings:[], customCfa:[], customEmployeurs:[], hiddenIds:[], lastScanDate:null, lastModified:0 };
+    const payload = { itemStates:{}, customListings:[], customCfa:[], customEmployeurs:[], hiddenIds:[], trash:[], lastScanDate:null, lastModified:0 };
     const r = await fetch(JSONBIN, {
       method:'POST', signal: AbortSignal.timeout(10000),
       headers:{ 'Content-Type':'application/json', 'X-Master-Key': apiKey, 'X-Bin-Name':'radar-alternance', 'X-Private-Bin':'true' },
@@ -926,9 +941,10 @@
       customCfa        = cloud.customCfa        || [];
       customEmployeurs = cloud.customEmployeurs || [];
       hiddenIds        = cloud.hiddenIds        || [];
+      trash            = cloud.trash            || [];
       lastScanDate     = cloud.lastScanDate     || null;
-      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify({ itemStates, customListings, customCfa, customEmployeurs, hiddenIds, lastScanDate, lastModified: cloud.lastModified })); }catch(e){}
-      renderAll(); updateScanHead();
+      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify({ itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: cloud.lastModified })); }catch(e){}
+      renderAll(); updateScanHead(); updateTrashBadge();
       setSyncStatus('ok', '☁️ Données cloud plus récentes — dossier mis à jour');
     } else {
       setSyncStatus('ok', '☁️ Synchronisé (données locales déjà à jour)');
@@ -993,6 +1009,7 @@
         customCfa = parsed.customCfa || [];
         customEmployeurs = parsed.customEmployeurs || [];
         hiddenIds = parsed.hiddenIds || [];
+        trash = parsed.trash || [];
         lastScanDate = parsed.lastScanDate || null;
       }catch(e){ /* donnée corrompue — état par défaut conservé */ }
     }
@@ -1004,7 +1021,7 @@
   }
 
   async function persistState(){
-    const payload = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, lastScanDate, lastModified: Date.now() };
+    const payload = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: Date.now() };
     const ok = await safeStorageSet(STORAGE_KEY, JSON.stringify(payload));
     if(ok) flashSaved();
     // Push cloud avec debounce (2s après la sauvegarde locale)
@@ -1030,22 +1047,103 @@
     return [...base, ...custom];
   }
 
+  const TRASH_CAP = 30;
+
+  function fmtRelative(ts){
+    const diff = Date.now() - ts;
+    const min = Math.floor(diff/60000);
+    if(min < 1) return "à l'instant";
+    if(min < 60) return `il y a ${min} min`;
+    const h = Math.floor(min/60);
+    if(h < 24) return `il y a ${h} h`;
+    const d = Math.floor(h/24);
+    if(d < 7) return `il y a ${d} j`;
+    return new Date(ts).toLocaleDateString('fr-FR');
+  }
+
   function deleteListing(id){
     const item = allListings().find(x=>x.id===id);
     if(!item) return;
-    if(!confirm(`Supprimer « ${item.poste} — ${item.entreprise} » du dossier ?\n\nSon statut et ses notes seront aussi supprimés. Irréversible depuis l'app (mais récupérable via une sauvegarde si tu en as une).`)) return;
 
-    // Retire l'entrée custom (ajout manuel, trouvée par scan, ou édition d'une annonce de base)
+    const wasBase = BASE_LISTINGS.some(x=>x.id===id);
+    const wasEditedBase = customListings.some(x=>x.id===id && x._editedBase);
+
+    // Suppression douce : snapshot en corbeille avant retrait — restaurable à tout moment, pas de confirm() nécessaire.
+    trash.unshift({ item:{...item}, deletedAt:Date.now(), wasBase, wasEditedBase });
+    if(trash.length > TRASH_CAP) trash.length = TRASH_CAP;
+
     const idx = customListings.findIndex(x=>x.id===id);
     if(idx !== -1) customListings.splice(idx, 1);
-
-    // Si c'est (aussi) une annonce de base, il faut la masquer explicitement,
-    // sinon la fusion base+custom la ferait réapparaître.
-    if(BASE_LISTINGS.some(x=>x.id===id) && !hiddenIds.includes(id)) hiddenIds.push(id);
+    if(wasBase && !hiddenIds.includes(id)) hiddenIds.push(id);
 
     delete itemStates[id];
     scheduleSave();
     renderAll();
+    updateTrashBadge();
+  }
+
+  function restoreFromTrash(idx){
+    const entry = trash[idx];
+    if(!entry) return;
+    if(entry.wasBase){
+      hiddenIds = hiddenIds.filter(hid=>hid!==entry.item.id);
+      if(entry.wasEditedBase) customListings.push({...entry.item, _editedBase:true});
+    } else {
+      customListings.push({...entry.item});
+    }
+    trash.splice(idx,1);
+    scheduleSave();
+    renderAll();
+    renderTrashModal();
+    updateTrashBadge();
+  }
+
+  function purgeFromTrash(idx){
+    trash.splice(idx,1);
+    scheduleSave();
+    renderTrashModal();
+    updateTrashBadge();
+  }
+
+  function emptyTrash(){
+    if(trash.length===0) return;
+    if(!confirm(`Vider la corbeille (${trash.length} annonce${trash.length>1?'s':''}) définitivement ? Action irréversible.`)) return;
+    trash = [];
+    scheduleSave();
+    renderTrashModal();
+    updateTrashBadge();
+  }
+
+  function openTrashModal(){
+    renderTrashModal();
+    document.getElementById('trashModalOverlay').classList.add('open');
+  }
+  function closeTrashModal(){
+    document.getElementById('trashModalOverlay').classList.remove('open');
+  }
+  function renderTrashModal(){
+    const list = document.getElementById('trashList');
+    if(trash.length===0){
+      list.innerHTML = `<div style="padding:24px 0;text-align:center;color:var(--text-faint);font-size:13px;">La corbeille est vide.</div>`;
+      return;
+    }
+    list.innerHTML = trash.map((entry,idx)=>`
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+        <div style="min-width:0;">
+          <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(entry.item.poste)}</div>
+          <div style="font-size:12px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(entry.item.entreprise)} · supprimée ${fmtRelative(entry.deletedAt)}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button class="btn ghost trash-restore" data-idx="${idx}" style="font-size:12px;padding:6px 9px;">↩️ Restaurer</button>
+          <button class="btn ghost trash-purge" data-idx="${idx}" style="font-size:12px;padding:6px 9px;">✕</button>
+        </div>
+      </div>`).join('');
+    list.querySelectorAll('.trash-restore').forEach(btn=>btn.addEventListener('click', ()=>restoreFromTrash(parseInt(btn.dataset.idx))));
+    list.querySelectorAll('.trash-purge').forEach(btn=>btn.addEventListener('click', ()=>purgeFromTrash(parseInt(btn.dataset.idx))));
+  }
+  function updateTrashBadge(){
+    const btn = document.getElementById('trashBtn');
+    if(btn) btn.textContent = trash.length>0 ? `🗑️ Corbeille (${trash.length})` : '🗑️ Corbeille';
   }
 
   function escapeHtml(s){
@@ -1525,6 +1623,23 @@
     try{ return JSON.parse(cleaned.slice(start, end+1)); }catch(e){ return []; }
   }
 
+  // Dernier état de quota Groq lu depuis les headers de réponse (peut rester vide si le
+  // navigateur ne les expose pas en cross-origin — géré avec un repli côté scanLive()).
+  let lastGroqRateInfo = { retryAfterMs:null, resetRequestsMs:null, remainingRequests:null };
+
+  // Formats Groq pour les délais : "7.66s", "2m59.56s", "120ms"
+  function parseGroqDuration(str){
+    if(!str) return null;
+    str = String(str).trim();
+    if(str.endsWith('ms')) return parseFloat(str) || null;
+    let totalMs = 0, matched = false;
+    const mMatch = str.match(/([\d.]+)\s*m(?!s)/);
+    const sMatch = str.match(/([\d.]+)\s*s/);
+    if(mMatch){ totalMs += parseFloat(mMatch[1])*60000; matched = true; }
+    if(sMatch){ totalMs += parseFloat(sMatch[1])*1000; matched = true; }
+    return matched && totalMs>0 ? totalMs : null;
+  }
+
   // compound-beta gère la recherche web en interne et renvoie le texte final en une seule
   // requête sans paramètre extra — pas besoin de boucle multi-tours.
   async function callGroqWithSearch(prompt){
@@ -1542,6 +1657,15 @@
         max_tokens: 1024
       })
     });
+
+    // Lecture best-effort des quotas réels — null si le navigateur ne les expose pas (CORS).
+    const remainingReq = response.headers.get('x-ratelimit-remaining-requests');
+    lastGroqRateInfo = {
+      retryAfterMs: parseGroqDuration(response.headers.get('retry-after')) ?? (response.headers.get('retry-after') ? parseFloat(response.headers.get('retry-after'))*1000 : null),
+      resetRequestsMs: parseGroqDuration(response.headers.get('x-ratelimit-reset-requests')),
+      remainingRequests: remainingReq!==null ? parseInt(remainingReq,10) : null
+    };
+
     if(response.status===401 || response.status===403) throw new Error('BAD_KEY');
     if(response.status===413) throw new Error('PAYLOAD_TOO_LARGE');
     if(response.status===429) throw new Error('RATE_LIMIT');
@@ -1551,6 +1675,7 @@
     return (msg && msg.content) ? msg.content : '';
   }
 
+
   function updateScanHead(){
     const el = document.getElementById('scanHeadDate');
     if(el && lastScanDate) el.textContent = lastScanDate;
@@ -1559,7 +1684,48 @@
   // Hors-profil : filet de sécurité si le modèle renvoie quand même un poste commercial/vente malgré le prompt.
   const OFF_TOPIC_POSTE_RX = /commercial|business\s*develop|charg[ée]\s+de\s+client[eè]le|conseiller\s+client[eè]le|\bvente\b|vendeur|prospection\s+commerciale|account\s+manager/i;
 
+  /* ============ COOLDOWN SCAN (respecte la vraie limite Groq quand connue, sinon repli fixe) ============ */
+  let scanCooldownUntil = 0; // timestamp ms ; 0 = pas de cooldown actif
+  let scanCooldownTimer = null;
+
+  function applyScanCooldown(ms){
+    if(!ms || ms<=0) return;
+    const until = Date.now() + ms;
+    if(until > scanCooldownUntil) scanCooldownUntil = until; // ne raccourcit jamais un cooldown déjà en cours
+    tickScanCooldown();
+  }
+
+  function tickScanCooldown(){
+    clearTimeout(scanCooldownTimer);
+    const label = document.getElementById('scanCooldownLabel');
+    const remaining = scanCooldownUntil - Date.now();
+    const cooling = remaining > 0;
+
+    ['scanNowBtn','scanWideBtn'].forEach(id=>{
+      const b = document.getElementById(id);
+      if(b) b.disabled = cooling;
+    });
+
+    if(!cooling){
+      scanCooldownUntil = 0;
+      if(label) label.textContent = '';
+      return;
+    }
+    if(label){
+      const s = Math.ceil(remaining/1000);
+      const mm = Math.floor(s/60), ss = s%60;
+      label.textContent = `⏱️ Prochain scan possible dans ${mm>0 ? mm+' min '+String(ss).padStart(2,'0')+'s' : ss+'s'} (limite Groq)`;
+    }
+    scanCooldownTimer = setTimeout(tickScanCooldown, 1000);
+  }
+
   async function scanLive(mode = 'targeted'){
+    if(scanCooldownUntil > Date.now()){
+      const statusEl = document.getElementById('scanStatus');
+      statusEl.className = 'scan-status err';
+      statusEl.textContent = "⏱️ Limite Groq — patiente encore un peu avant de relancer un scan (compte à rebours sous les boutons).";
+      return;
+    }
     const btn = mode === 'wide' ? document.getElementById('scanWideBtn') : document.getElementById('scanNowBtn');
     const statusEl = document.getElementById('scanStatus');
 
@@ -1675,6 +1841,11 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
       statusEl.textContent = added>0
         ? `✅ ${added} nouvelle${added>1?'s':''} annonce${added>1?'s':''} trouvée${added>1?'s':''} et ajoutée${added>1?'s':''} au dossier.`
         : '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier, ou la recherche a pris trop de temps : réessaie si besoin).';
+
+      // Cooldown proactif si Groq indique un quota déjà à 0 (évite un 429 inutile au prochain clic).
+      if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
+        applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
+      }
     }catch(err){
       console.error('Scan live impossible', err);
       statusEl.className = 'scan-status err';
@@ -1684,17 +1855,19 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
       }else if(err && err.message==='PAYLOAD_TOO_LARGE'){
         statusEl.textContent = "⚠️ Requête trop volumineuse pour Groq (413). Réessaie — le prompt a été allégé dans cette version.";
       }else if(err && err.message==='RATE_LIMIT'){
-        statusEl.textContent = "⚠️ Limite de requêtes Groq atteinte pour l'instant — réessaie dans quelques minutes.";
+        const waitMs = lastGroqRateInfo.retryAfterMs || lastGroqRateInfo.resetRequestsMs || 60000;
+        applyScanCooldown(waitMs);
+        const waitS = Math.ceil(waitMs/1000);
+        const waitTxt = waitS < 60 ? waitS+'s' : Math.ceil(waitS/60)+' min';
+        statusEl.textContent = `⚠️ Limite de requêtes Groq atteinte — prochain scan possible dans ${waitTxt} environ (compte à rebours sous les boutons).`;
       }else if(err instanceof TypeError){
         statusEl.textContent = "⚠️ Impossible de joindre l'API Groq (connexion coupée, ou bloquée par le navigateur/l'extension). Vérifie ta connexion et réessaie ; si ça persiste, utilise les liens juste au-dessus en attendant.";
       }else{
         statusEl.textContent = "⚠️ Le scan a échoué (" + (err && err.message ? err.message : 'erreur inconnue') + "). Réessaie, ou utilise les liens juste au-dessus en attendant.";
       }
     }finally{
-      btn.disabled = false;
-      document.getElementById('scanNowBtn').disabled = false;
-      document.getElementById('scanWideBtn').disabled = false;
       btn.textContent = originalLabel;
+      tickScanCooldown(); // réactive les boutons seulement si aucun cooldown n'est actif
     }
   }
 
@@ -1720,19 +1893,46 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
   }
 
   /* ============ SAUVEGARDE LOCALE (fichier .json téléchargeable — restaurable sur n'importe quel appareil) ============ */
-  function downloadBackup(){
+  // iOS Safari (surtout en PWA installée, ce qui est le cas ici sur GitHub Pages) ignore souvent
+  // l'attribut download sur un lien blob: — le clic ouvre juste le JSON en texte sans rien enregistrer.
+  // On tente donc d'abord le partage natif (Web Share API), qui propose "Enregistrer dans Fichiers"
+  // et fonctionne de façon fiable sur iPhone ; on retombe sur le lien classique sinon (PC/desktop).
+  async function downloadBackup(){
     const payload = {
       app:'radar-alternance-sio-sisr', version:1, exportedAt:new Date().toISOString(),
-      itemStates, customListings, customCfa, customEmployeurs, hiddenIds, lastScanDate, lastModified: Date.now()
+      itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: Date.now()
     };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
+    const json = JSON.stringify(payload, null, 2);
     const d = new Date();
     const stamp = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-    const a = document.createElement('a');
-    a.href = url; a.download = `radar-alternance-sauvegarde-${stamp}.json`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const filename = `radar-alternance-sauvegarde-${stamp}.json`;
+    const blob = new Blob([json], {type:'application/json'});
+
+    if(navigator.share && navigator.canShare){
+      try{
+        const file = new File([blob], filename, {type:'application/json'});
+        if(navigator.canShare({files:[file]})){
+          await navigator.share({files:[file], title:filename});
+          return; // partage natif réussi (ou annulé volontairement par l'utilisateur)
+        }
+      }catch(err){
+        if(err && err.name === 'AbortError') return; // annulation volontaire — pas une erreur
+        // sinon on continue vers le repli ci-dessous
+      }
+    }
+
+    try{
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 300);
+    }catch(err){
+      // Dernier recours : ouvrir le JSON dans un nouvel onglet pour sauvegarde manuelle.
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+    }
   }
 
   function triggerRestoreBackup(){
@@ -1761,25 +1961,29 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
     customCfa        = data.customCfa        || [];
     customEmployeurs = data.customEmployeurs || [];
     hiddenIds         = data.hiddenIds        || [];
+    trash             = data.trash            || [];
     lastScanDate      = data.lastScanDate     || null;
     await persistState(); // sauvegarde locale + push cloud si synchro active (la restauration devient la version la plus récente)
     renderAll();
     updateScanHead();
+    updateTrashBadge();
     alert('✅ Sauvegarde restaurée.');
   }
 
   /* ============ RESET ============ */
   async function resetTracking(){
-    if(!confirm("Réinitialiser tous les statuts et notes ? Les annonces ajoutées manuellement (et celles trouvées par scan, y compris les CFA/employeurs découverts) seront aussi supprimées, et les annonces de base que tu as supprimées individuellement seront restaurées. Cette action est irréversible.")) return;
+    if(!confirm("Réinitialiser tous les statuts et notes ? Les annonces ajoutées manuellement (et celles trouvées par scan, y compris les CFA/employeurs découverts) seront aussi supprimées, les annonces de base supprimées individuellement seront restaurées, et la corbeille sera vidée définitivement. Cette action est irréversible.")) return;
     itemStates = {};
     customListings = [];
     customCfa = [];
     customEmployeurs = [];
     hiddenIds = [];
+    trash = [];
     lastScanDate = null;
     await persistState(); // sauvegarde locale complète + push cloud si synchro active
     document.getElementById('scanHeadDate').textContent = '16/08/2026';
     renderAll();
+    updateTrashBadge();
   }
 
   /* ============ INIT ============ */
@@ -1826,6 +2030,11 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
     document.getElementById('clearKey').addEventListener('click', clearKeySaved);
     document.getElementById('keyModalOverlay').addEventListener('click', e=>{ if(e.target.id==='keyModalOverlay') closeKeyModal(); });
 
+    document.getElementById('trashBtn').addEventListener('click', openTrashModal);
+    document.getElementById('closeTrash').addEventListener('click', closeTrashModal);
+    document.getElementById('emptyTrashBtn').addEventListener('click', emptyTrash);
+    document.getElementById('trashModalOverlay').addEventListener('click', e=>{ if(e.target.id==='trashModalOverlay') closeTrashModal(); });
+
     document.getElementById('syncBtn').addEventListener('click', openSyncModal);
     document.getElementById('cancelSync').addEventListener('click', closeSyncModal);
     document.getElementById('confirmSync').addEventListener('click', confirmSyncConnect);
@@ -1842,7 +2051,7 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
     // 2) Config synchro cloud (localStorage device, lecture synchrone).
     loadSyncCfg();
     // 3) Chargement local + sync cloud en cascade : local d'abord (rapide), puis cloud si plus récent.
-    loadState().then(()=>{ renderAll(); updateScanHead(); syncFromCloud(); });
+    loadState().then(()=>{ renderAll(); updateScanHead(); updateTrashBadge(); syncFromCloud(); });
     // 4) Clé API Groq, aussi en tâche de fond.
     loadGroqKey();
   }
