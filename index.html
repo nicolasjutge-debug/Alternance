@@ -118,7 +118,7 @@
   .scan-live{
     margin-top:12px;
     border:1px solid var(--border);
-    border-left:3px solid var(--red);
+    border-left:3px solid var(--cyan);
     background:var(--surface);
     border-radius:0 8px 8px 0;
     padding:14px 16px;
@@ -385,6 +385,7 @@
         <button class="btn ghost" id="configKeyBtn" type="button">🔑 Clé API</button>
         <button class="btn ghost" id="syncBtn" type="button"><span id="syncDot" class="sync-dot" title="Synchro désactivée"></span>&nbsp;Synchro ☁️</button>
       </div>
+      <div id="syncStatusLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
       <div id="scanCooldownLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
       <div class="scan-status" id="scanStatus"></div>
       <div class="scan-links">
@@ -889,6 +890,8 @@
   function setSyncStatus(state, msg){
     const dot = document.getElementById('syncDot');
     if(dot){ dot.className = 'sync-dot' + (state ? ' '+state : ''); dot.title = msg || ''; }
+    const label = document.getElementById('syncStatusLabel');
+    if(label){ label.textContent = msg || ''; label.style.color = state==='err' ? 'var(--red)' : (state==='ok' ? 'var(--green)' : 'var(--text-dim)'); }
   }
   function updateSyncDot(){
     const label = syncCfg ? `☁️ Synchro active — Bin ${syncCfg.binId}` : 'Synchro désactivée (données locales uniquement)';
@@ -1766,14 +1769,14 @@
 
     const knownShort = allListings().slice(0,10).map(i=>`${i.entreprise}|${i.poste}`).join('\n');
 
-    const promptTargeted = `Offres alternance à Rennes (35) ou -1h, rentrée 2027. Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure, Technicien réseau, Technicien support & cybersécurité. Sources : AFTEC, MyDigitalSchool, ESNA, CMA Bruz, Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole, SNCF, ACCEIS, Nomios, Axido, Airbus Cyber. Priorité aux offres accessibles après le Bac (accessibleBac:true). Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels (administration systèmes/réseaux, support, exploitation, sécurité).
+    const promptTargeted = `Offres alternance à Rennes (35) ou -1h, rentrée 2027. Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure, Technicien réseau, Technicien support & cybersécurité. Sources : AFTEC, MyDigitalSchool, ESNA, CMA Bruz, Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole, SNCF, ACCEIS, Nomios, Axido, Airbus Cyber. Priorité aux offres accessibles après le Bac (accessibleBac:true). Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels (administration systèmes/réseaux, support, exploitation, sécurité). Avant de renvoyer un lien, vérifie qu'il ouvre bien une page consultable et à jour (annonce toujours en ligne) — exclus tout lien mort, expiré, ou renvoyant une page d'erreur/vide.
 
 Déjà au dossier :
 ${knownShort}
 
 JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, lien, secteur, missions. Max 3 nouvelles. Si rien : [].`;
 
-    const promptWide = `Recherche web libre : offres alternance informatique/cybersécurité Rennes (35) ou -1h, rentrée 2027. Tous niveaux : BTS SIO SISR (accessible Bac), Bachelor, Licence Pro, Master cybersécurité (Bac+3 à Bac+5). Cherche aussi intitulés : Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier. Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels.
+    const promptWide = `Recherche web libre : offres alternance informatique/cybersécurité Rennes (35) ou -1h, rentrée 2027. Tous niveaux : BTS SIO SISR (accessible Bac), Bachelor, Licence Pro, Master cybersécurité (Bac+3 à Bac+5). Cherche aussi intitulés : Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier. Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels. Avant de renvoyer un lien, vérifie qu'il ouvre bien une page consultable et à jour (annonce toujours en ligne) — exclus tout lien mort, expiré, ou renvoyant une page d'erreur/vide.
 
 Déjà au dossier :
 ${knownShort}
