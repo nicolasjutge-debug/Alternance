@@ -220,7 +220,7 @@
     background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
     border-left:3px solid var(--text-faint);
     padding:16px 18px; display:flex; flex-direction:column; gap:10px;
-    transition:border-color .15s ease;
+    transition:border-color .15s ease; min-width:0;
   }
   @media (hover:hover) and (pointer:fine){
     .card:hover{border-color:var(--border); box-shadow:0 4px 24px -6px rgba(0,0,0,.5);}
@@ -289,7 +289,7 @@
   @media (min-width:760px){ .cfa-grid{grid-template-columns:repeat(auto-fill, minmax(280px,1fr));} }
   .cfa-card{
     background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
-    padding:14px 16px; font-size:13px;
+    padding:14px 16px; font-size:13px; min-width:0;
   }
   .cfa-card.cfa-custom{ border-left:3px solid var(--cyan); }
   .cfa-card .name{ font-family:var(--mono); font-weight:700; font-size:13.5px; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
@@ -876,22 +876,23 @@
   const JSONBIN = 'https://api.jsonbin.io/v3/b';
 
   function loadSyncCfg(){
-    try{ const r = localStorage.getItem(SYNC_CONFIG_KEY); syncCfg = r ? JSON.parse(r) : null; }
-    catch(e){ syncCfg = null; }
-    updateSyncDot();
+    return safeStorageGet(SYNC_CONFIG_KEY).then(res=>{
+      try{ syncCfg = (res && res.value) ? JSON.parse(res.value) : null; }
+      catch(e){ syncCfg = null; }
+      updateSyncDot();
+    });
   }
   function saveSyncCfg(cfg){
     syncCfg = cfg;
-    try{ cfg ? localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(cfg)) : localStorage.removeItem(SYNC_CONFIG_KEY); }
-    catch(e){}
-    updateSyncDot();
+    return safeStorageSet(SYNC_CONFIG_KEY, cfg ? JSON.stringify(cfg) : '').then(()=>updateSyncDot());
   }
   function setSyncStatus(state, msg){
     const dot = document.getElementById('syncDot');
     if(dot){ dot.className = 'sync-dot' + (state ? ' '+state : ''); dot.title = msg || ''; }
   }
   function updateSyncDot(){
-    setSyncStatus(syncCfg ? 'ok' : '', syncCfg ? '☁️ Synchro active — connecté à JSONBin' : 'Synchro désactivée (données locales uniquement)');
+    const label = syncCfg ? `☁️ Synchro active — Bin ${syncCfg.binId}` : 'Synchro désactivée (données locales uniquement)';
+    setSyncStatus(syncCfg ? 'ok' : '', label);
   }
 
   async function cloudFetch(){
@@ -915,8 +916,13 @@
         headers:{ 'Content-Type':'application/json', 'X-Master-Key': syncCfg.apiKey },
         body: JSON.stringify(payload)
       });
-      setSyncStatus(r.ok ? 'ok' : 'err', r.ok ? '☁️ Synchronisé' : '⚠️ Erreur cloud (PUT '+r.status+')');
-      return r.ok;
+      if(r.ok){ setSyncStatus('ok', '☁️ Synchronisé'); return true; }
+      if(r.status===403){
+        setSyncStatus('err', "⚠️ Accès refusé par JSONBin (403) — cette Master Key n'a pas accès à ce Bin ID (souvent : le bin a été créé avec une AUTRE clé). Rouvre ☁️ Synchro pour vérifier la paire clé/Bin ID.");
+      } else {
+        setSyncStatus('err', '⚠️ Erreur cloud (PUT '+r.status+')');
+      }
+      return false;
     }catch(e){ setSyncStatus('err', '⚠️ JSONBin injoignable — modifs enregistrées localement'); return false; }
   }
   async function cloudCreate(apiKey){
@@ -933,7 +939,7 @@
     if(!syncCfg || !syncCfg.apiKey || !syncCfg.binId) return;
     setSyncStatus('loading', 'Récupération des données cloud…');
     let localModified = 0;
-    try{ const raw = localStorage.getItem(STORAGE_KEY); if(raw){ localModified = JSON.parse(raw).lastModified || 0; } }catch(e){}
+    try{ const res = await safeStorageGet(STORAGE_KEY); if(res && res.value){ localModified = JSON.parse(res.value).lastModified || 0; } }catch(e){}
     const cloud = await cloudFetch();
     if(!cloud){ setSyncStatus('err', '⚠️ JSONBin injoignable — données locales affichées'); return; }
     if((cloud.lastModified || 0) > localModified){
@@ -944,7 +950,7 @@
       hiddenIds        = cloud.hiddenIds        || [];
       trash            = cloud.trash            || [];
       lastScanDate     = cloud.lastScanDate     || null;
-      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify({ itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: cloud.lastModified })); }catch(e){}
+      await safeStorageSet(STORAGE_KEY, JSON.stringify({ itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: cloud.lastModified }));
       renderAll(); updateScanHead(); updateTrashBadge();
       setSyncStatus('ok', '☁️ Données cloud plus récentes — dossier mis à jour');
     } else {
@@ -969,6 +975,12 @@
     const statusEl = document.getElementById('syncModalStatus');
     const btn = document.getElementById('confirmSync');
     if(!apiKey){ statusEl.style.color='var(--red)'; statusEl.textContent='La Master Key est obligatoire.'; return; }
+
+    if(!binId){
+      const ok = confirm("Bin ID vide : un NOUVEAU bin cloud vide va être créé.\n\nSi la synchro est déjà configurée sur un autre appareil (iPhone/PC), retrouve plutôt SON Bin ID — sinon chaque appareil pointera vers un bin différent, déconnecté des données existantes.\n\nCréer quand même un nouveau bin ?");
+      if(!ok) return;
+    }
+
     btn.disabled = true; btn.textContent = 'Connexion…';
     statusEl.style.color = 'var(--amber)';
     try{
@@ -977,23 +989,28 @@
         binId = await cloudCreate(apiKey);
         binField.value = binId;
         statusEl.style.color='var(--green)';
-        statusEl.textContent = '✅ Bin créé ! ID : ' + binId + ' — note-le pour configurer tes autres appareils.';
-        await new Promise(r=>setTimeout(r, 1200));
+        statusEl.textContent = '✅ Bin créé ! ID : ' + binId + ' — NOTE-LE pour connecter tes autres appareils à ce même bin.';
+        await new Promise(r=>setTimeout(r, 1600));
       } else {
         statusEl.textContent = 'Test de connexion…';
       }
       const test = await fetch(`${JSONBIN}/${binId}/latest`, { headers:{ 'X-Master-Key':apiKey, 'X-Bin-Meta':'false' }, signal: AbortSignal.timeout(8000) });
+      if(test.status===403){
+        statusEl.style.color='var(--red)';
+        statusEl.textContent = "⚠️ Accès refusé (403) — cette Master Key n'a pas accès à ce Bin ID (souvent : ils ne viennent pas de la même connexion JSONBin, ou le bin a été créé avec une autre clé).";
+        return;
+      }
       if(!test.ok){ statusEl.style.color='var(--red)'; statusEl.textContent='⚠️ Bin inaccessible (HTTP '+test.status+') — vérifie la clé et l’ID.'; return; }
       statusEl.style.color='var(--green)'; statusEl.textContent='☁️ Connecté !';
-      saveSyncCfg({ apiKey, binId });
+      await saveSyncCfg({ apiKey, binId });
       setTimeout(()=>{ closeSyncModal(); syncFromCloud(); }, 700);
     }catch(e){
       statusEl.style.color='var(--red)'; statusEl.textContent='⚠️ Erreur : '+(e.message||'impossible de joindre JSONBin');
     }finally{ btn.disabled=false; btn.textContent='Connecter'; }
   }
-  function clearSyncConfig(){
+  async function clearSyncConfig(){
     if(!confirm('Désactiver la synchronisation cloud sur cet appareil ? (Les données locales sont conservées.)')) return;
-    saveSyncCfg(null);
+    await saveSyncCfg(null);
     document.getElementById('f-sync-key').value='';
     document.getElementById('f-sync-bin').value='';
     const st = document.getElementById('syncModalStatus');
@@ -2049,10 +2066,11 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
     renderAll();
     updateScanHead();
     attachListeners();
-    // 2) Config synchro cloud (localStorage device, lecture synchrone).
-    loadSyncCfg();
-    // 3) Chargement local + sync cloud en cascade : local d'abord (rapide), puis cloud si plus récent.
-    loadState().then(()=>{ renderAll(); updateScanHead(); updateTrashBadge(); syncFromCloud(); });
+    // 2-3) Config synchro chargée AVANT syncFromCloud() : sinon syncCfg pouvait être encore
+    // vide au moment du premier appel, et la synchro au chargement était silencieusement ignorée.
+    Promise.all([loadSyncCfg(), loadState()]).then(()=>{
+      renderAll(); updateScanHead(); updateTrashBadge(); syncFromCloud();
+    });
     // 4) Clé API Groq, aussi en tâche de fond.
     loadGroqKey();
   }
