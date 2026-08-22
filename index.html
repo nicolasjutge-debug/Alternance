@@ -938,24 +938,55 @@
       return { ok:true, data: await r.json() };
     }catch(e){ return { ok:false, status:0, message:null }; }
   }
+  // Message JSONBin spécifique à la limite de taille du palier gratuit (100 Ko/bin) — distinct d'un
+  // vrai souci de clé/bin, donc traité différemment : on allège la charge, on ne signale pas une
+  // erreur de configuration à corriger.
+  function isJsonBinSizeLimitMessage(message){
+    return !!message && /cannot update a record over|over\s*100\s*k[ob]/i.test(message);
+  }
+
+  async function pushPayloadToJsonBin(binId, apiKey, payload){
+    const r = await fetch(`${JSONBIN}/${binId}`, {
+      method:'PUT', signal: AbortSignal.timeout(8000),
+      headers:{ 'Content-Type':'application/json', 'X-Master-Key': apiKey },
+      body: JSON.stringify(payload)
+    });
+    if(r.ok) return { ok:true, status:r.status };
+    const message = await jsonbinErrorMessage(r);
+    return { ok:false, status:r.status, message };
+  }
+
   async function cloudPush(){
     if(!syncCfg || !syncCfg.apiKey || !syncCfg.binId){ return false; }
     setSyncStatus('loading', 'Synchronisation en cours…');
-    const payload = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: Date.now() };
+    const base = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, lastScanDate, lastModified: Date.now() };
     try{
-      const r = await fetch(`${JSONBIN}/${syncCfg.binId}`, {
-        method:'PUT', signal: AbortSignal.timeout(8000),
-        headers:{ 'Content-Type':'application/json', 'X-Master-Key': syncCfg.apiKey },
-        body: JSON.stringify(payload)
-      });
-      if(r.ok){ setSyncStatus('ok', '☁️ Synchronisé'); return true; }
-      const message = await jsonbinErrorMessage(r);
-      if(r.status===403){
-        setSyncStatus('err', message
-          ? `⚠️ JSONBin refuse la synchro (403) : ${message} — rouvre ☁️ Synchro pour vérifier/reconnecter.`
+      // Tentative 1 : tout, corbeille comprise.
+      let res = await pushPayloadToJsonBin(syncCfg.binId, syncCfg.apiKey, { ...base, trash });
+      if(res.ok){ setSyncStatus('ok', '☁️ Synchronisé'); return true; }
+
+      if(isJsonBinSizeLimitMessage(res.message) && trash.length > 0){
+        // La corbeille (snapshots complets des annonces supprimées) est ce qu'on peut sacrifier côté
+        // CLOUD sans rien perdre côté données actives — elle reste intacte en LOCAL sur cet appareil,
+        // juste pas synchronisée telle quelle.
+        if(trash.length > 5){
+          res = await pushPayloadToJsonBin(syncCfg.binId, syncCfg.apiKey, { ...base, trash: trash.slice(0,5) });
+          if(res.ok){ setSyncStatus('ok', `☁️ Synchronisé (corbeille allégée pour le cloud — ${trash.length} entrée${trash.length>1?'s':''} restent en local)`); return true; }
+        }
+        if(isJsonBinSizeLimitMessage(res.message)){
+          res = await pushPayloadToJsonBin(syncCfg.binId, syncCfg.apiKey, { ...base, trash: [] });
+          if(res.ok){ setSyncStatus('ok', `☁️ Synchronisé (corbeille exclue du cloud — trop volumineuse pour le palier gratuit JSONBin ; ${trash.length} entrée${trash.length>1?'s':''} restent en local sur cet appareil)`); return true; }
+        }
+      }
+
+      if(isJsonBinSizeLimitMessage(res.message)){
+        setSyncStatus('err', `⚠️ Même sans la corbeille, le dossier dépasse les 100 Ko du palier gratuit JSONBin. Passe en Pro (jsonbin.io/pricing — jusqu'à 1 Mo), ou allège le dossier (notes/missions plus courtes, vieilles annonces supprimées).`);
+      } else if(res.status===403){
+        setSyncStatus('err', res.message
+          ? `⚠️ JSONBin refuse la synchro (403) : ${res.message} — rouvre ☁️ Synchro pour vérifier/reconnecter.`
           : "⚠️ Accès refusé par JSONBin (403) — cette Master Key n'a pas accès à ce Bin ID (souvent : le bin a été créé avec une AUTRE clé, la clé a été régénérée depuis, ou le quota gratuit JSONBin est épuisé). Rouvre ☁️ Synchro pour vérifier la paire clé/Bin ID.");
       } else {
-        setSyncStatus('err', message ? `⚠️ Erreur cloud (${r.status}) : ${message}` : '⚠️ Erreur cloud (PUT '+r.status+')');
+        setSyncStatus('err', res.message ? `⚠️ Erreur cloud (${res.status}) : ${res.message}` : '⚠️ Erreur cloud (PUT '+res.status+')');
       }
       return false;
     }catch(e){ setSyncStatus('err', '⚠️ JSONBin injoignable — modifs enregistrées localement'); return false; }
@@ -1135,7 +1166,7 @@
     return [...base, ...custom];
   }
 
-  const TRASH_CAP = 30;
+  const TRASH_CAP = 15; // réduit (était 30) : des snapshots complets s'accumulent vite et pèsent sur la limite JSONBin gratuite (100 Ko/bin)
 
   function fmtRelative(ts){
     const diff = Date.now() - ts;
