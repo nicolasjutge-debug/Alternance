@@ -212,6 +212,7 @@
   label.chk input{accent-color:var(--red);}
 
   /* ---------- GRID / CARDS ---------- */
+  .result-count{font-size:12.5px; color:var(--text-faint); margin:2px 0 12px;}
   .listings-grid{display:grid; grid-template-columns:1fr; gap:16px; margin-bottom:36px;}
   @media (min-width:760px){
     .listings-grid{grid-template-columns:repeat(auto-fill, minmax(370px,1fr));}
@@ -450,6 +451,11 @@
       <option value="cfa">🎓 Via CFA</option>
       <option value="direct">🏢 Hors CFA (direct)</option>
     </select>
+    <select id="consultableFilter">
+      <option value="all">Lien : tous</option>
+      <option value="consultable">🔗 Consultables uniquement</option>
+      <option value="unavailable">⚠️ Non consultables uniquement</option>
+    </select>
     <select id="sortSelect">
       <option value="date-desc">Plus récentes</option>
       <option value="ville">Ville (A→Z)</option>
@@ -461,6 +467,7 @@
     <button class="btn primary" id="addBtn">+ Ajouter une annonce</button>
   </div>
 
+  <div class="result-count" id="resultCount"></div>
   <div class="listings-grid" id="grid"></div>
 
   <div class="section-head">
@@ -927,6 +934,62 @@
     }catch(e){ return null; }
   }
 
+  // Compression gzip native du navigateur pour tenir sous la limite gratuite JSONBin (100 Ko/bin)
+  // sans rien sacrifier : le JSON de ce dossier (clés répétées, texte français) compresse très bien
+  // (souvent >90%). Repli transparent sur du JSON brut si l'API n'est pas dispo (vieux navigateur) —
+  // la lecture reconnaît et gère les deux formats indifféremment, donc rien à migrer.
+  const CAN_COMPRESS = typeof window !== 'undefined' && 'CompressionStream' in window && 'DecompressionStream' in window;
+
+  async function streamToUint8Array(stream){
+    const reader = stream.getReader();
+    const chunks = []; let total = 0;
+    while(true){
+      const { done, value } = await reader.read();
+      if(done) break;
+      chunks.push(value); total += value.length;
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for(const c of chunks){ out.set(c, offset); offset += c.length; }
+    return out;
+  }
+  function uint8ArrayToBase64(bytes){
+    let binary = '';
+    const chunkSize = 0x8000;
+    for(let i=0; i<bytes.length; i+=chunkSize) binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunkSize));
+    return btoa(binary);
+  }
+  function base64ToUint8Array(b64){
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for(let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+  // Renvoie soit {_gz:"<base64>"} (compressé), soit l'objet tel quel si la compression échoue/n'existe pas.
+  async function compressPayload(obj){
+    if(!CAN_COMPRESS) return obj;
+    try{
+      const json = JSON.stringify(obj);
+      const cs = new CompressionStream('gzip');
+      const writer = cs.writable.getWriter();
+      writer.write(new TextEncoder().encode(json));
+      writer.close();
+      const compressed = await streamToUint8Array(cs.readable);
+      return { _gz: uint8ArrayToBase64(compressed) };
+    }catch(e){ return obj; }
+  }
+  // Reconnaît {_gz:"..."} (compressé) et le décompresse ; sinon renvoie l'objet tel quel (ancien
+  // format, ou poussé depuis un appareil sans support de compression).
+  async function decompressPayload(data){
+    if(!data || !data._gz) return data;
+    const ds = new DecompressionStream('gzip');
+    const writer = ds.writable.getWriter();
+    writer.write(base64ToUint8Array(data._gz));
+    writer.close();
+    const decompressed = await streamToUint8Array(ds.readable);
+    return JSON.parse(new TextDecoder().decode(decompressed));
+  }
+
   async function cloudFetch(){
     if(!syncCfg || !syncCfg.apiKey || !syncCfg.binId) return { ok:false, status:0, message:null };
     try{
@@ -935,7 +998,8 @@
         signal: AbortSignal.timeout(8000)
       });
       if(!r.ok){ const message = await jsonbinErrorMessage(r); return { ok:false, status:r.status, message }; }
-      return { ok:true, data: await r.json() };
+      const wire = await r.json();
+      return { ok:true, data: await decompressPayload(wire) };
     }catch(e){ return { ok:false, status:0, message:null }; }
   }
   // Message JSONBin spécifique à la limite de taille du palier gratuit (100 Ko/bin) — distinct d'un
@@ -946,10 +1010,11 @@
   }
 
   async function pushPayloadToJsonBin(binId, apiKey, payload){
+    const wire = await compressPayload(payload);
     const r = await fetch(`${JSONBIN}/${binId}`, {
       method:'PUT', signal: AbortSignal.timeout(8000),
       headers:{ 'Content-Type':'application/json', 'X-Master-Key': apiKey },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(wire)
     });
     if(r.ok) return { ok:true, status:r.status };
     const message = await jsonbinErrorMessage(r);
@@ -1272,6 +1337,7 @@
   function renderStats(){
     const items = allListings();
     const bac = items.filter(i=>i.accessibleBac).length;
+    const unavailable = items.filter(i=>i.lienConsultable===false).length;
     const toContact = items.filter(i=>{
       const st = getState(i.id).status;
       return st==='repérer' || st==='contacter';
@@ -1280,6 +1346,7 @@
     bar.innerHTML = `
       <div class="stat"><div class="n">${items.length}</div><div class="l">Annonces au dossier</div></div>
       <div class="stat amber"><div class="n">${bac}</div><div class="l">⭐ Accessibles Bac</div></div>
+      <div class="stat amber"><div class="n">${unavailable}</div><div class="l">⚠️ Non consultables</div></div>
       <div class="stat red"><div class="n">${toContact}</div><div class="l">À traiter</div></div>
       <div class="stat"><div class="n">${CFA_NETWORKS.length}</div><div class="l">CFA repérés</div></div>
     `;
@@ -1316,6 +1383,7 @@
     const q = document.getElementById('searchInput').value.trim().toLowerCase();
     const cycle = document.getElementById('cycleFilter').value;
     const source = document.getElementById('sourceFilter').value;
+    const consultable = document.getElementById('consultableFilter').value;
     const partner = document.getElementById('partnerFilter').value;
     const bacOnly = document.getElementById('bacOnly').checked;
     const hideArchived = document.getElementById('hideArchived').checked;
@@ -1326,6 +1394,8 @@
     if(cycle!=='all' && item.cycle!==cycle) return false;
     if(source==='cfa' && !item.cfa) return false;
     if(source==='direct' && item.cfa) return false;
+    if(consultable==='consultable' && item.lienConsultable===false) return false;
+    if(consultable==='unavailable' && item.lienConsultable!==false) return false;
     if(partner !== 'all'){
       const [kind, name] = partner.split(':').map((s,i)=> i===0 ? s : partner.slice(partner.indexOf(':')+1));
       if(kind==='cfa' && (item.cfa||'').toLowerCase() !== name.toLowerCase()) return false;
@@ -1360,7 +1430,14 @@
 
   function renderGrid(){
     const grid = document.getElementById('grid');
-    const items = sortItems(allListings().filter(matchesFilters));
+    const all = allListings();
+    const items = sortItems(all.filter(matchesFilters));
+    const countEl = document.getElementById('resultCount');
+    if(countEl){
+      countEl.textContent = items.length===all.length
+        ? `${items.length} annonce${items.length>1?'s':''} affichée${items.length>1?'s':''}`
+        : `${items.length} annonce${items.length>1?'s':''} affichée${items.length>1?'s':''} sur ${all.length} au dossier`;
+    }
 
     if(items.length===0){
       grid.innerHTML = `<div class="empty" style="grid-column:1/-1">Aucune annonce ne correspond à ces filtres. Élargis la recherche, ou ajoute une nouvelle annonce trouvée.</div>`;
@@ -2303,6 +2380,7 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     document.getElementById('searchInput').addEventListener('input', renderGrid);
     document.getElementById('cycleFilter').addEventListener('change', renderGrid);
     document.getElementById('sourceFilter').addEventListener('change', renderGrid);
+    document.getElementById('consultableFilter').addEventListener('change', renderGrid);
     document.getElementById('sortSelect').addEventListener('change', renderGrid);
     document.getElementById('bacOnly').addEventListener('change', renderGrid);
     document.getElementById('hideArchived').addEventListener('change', renderGrid);
