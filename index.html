@@ -446,6 +446,7 @@
     </select>
     <label class="chk"><input type="checkbox" id="bacOnly"> ⭐ Accessible Bac</label>
     <label class="chk"><input type="checkbox" id="hideArchived" checked> Masquer archivées/pourvues</label>
+    <label class="chk"><input type="checkbox" id="hideNoLink"> 🔗 Avec lien uniquement</label>
     <button class="btn ghost" id="showArchivedBtn" style="font-size:12.5px;">📦 Voir archivées</button>
     <button class="btn primary" id="addBtn">+ Ajouter une annonce</button>
   </div>
@@ -1251,10 +1252,12 @@
     const partner = document.getElementById('partnerFilter').value;
     const bacOnly = document.getElementById('bacOnly').checked;
     const hideArchived = document.getElementById('hideArchived').checked;
+    const hideNoLink = document.getElementById('hideNoLink').checked;
     const st = getState(item.id).status;
 
     if(hideArchived && st==='archivee') return false;
     if(bacOnly && !item.accessibleBac) return false;
+    if(hideNoLink && (!item.lien || item.lien === '#')) return false;
     if(cycle!=='all' && item.cycle!==cycle) return false;
     if(source==='cfa' && !item.cfa) return false;
     if(source==='direct' && item.cfa) return false;
@@ -2236,6 +2239,7 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     document.getElementById('cycleFilter').addEventListener('change', renderGrid);
     document.getElementById('sourceFilter').addEventListener('change', renderGrid);
     document.getElementById('sortSelect').addEventListener('change', renderGrid);
+    document.getElementById('hideNoLink').addEventListener('change', renderGrid);
     document.getElementById('bacOnly').addEventListener('change', renderGrid);
     document.getElementById('hideArchived').addEventListener('change', renderGrid);
 
