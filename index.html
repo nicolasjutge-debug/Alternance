@@ -1338,6 +1338,7 @@
     const items = allListings();
     const bac = items.filter(i=>i.accessibleBac).length;
     const unavailable = items.filter(i=>i.lienConsultable===false).length;
+    const direct = items.filter(i=>!i.cfa).length;
     const toContact = items.filter(i=>{
       const st = getState(i.id).status;
       return st==='repérer' || st==='contacter';
@@ -1346,6 +1347,7 @@
     bar.innerHTML = `
       <div class="stat"><div class="n">${items.length}</div><div class="l">Annonces au dossier</div></div>
       <div class="stat amber"><div class="n">${bac}</div><div class="l">⭐ Accessibles Bac</div></div>
+      <div class="stat green"><div class="n">${direct}</div><div class="l">🏢 Directes (sans CFA)</div></div>
       <div class="stat amber"><div class="n">${unavailable}</div><div class="l">⚠️ Non consultables</div></div>
       <div class="stat red"><div class="n">${toContact}</div><div class="l">À traiter</div></div>
       <div class="stat"><div class="n">${CFA_NETWORKS.length}</div><div class="l">CFA repérés</div></div>
