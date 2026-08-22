@@ -137,7 +137,8 @@
   .scan-links a{
     display:inline-flex; align-items:center; gap:6px; text-decoration:none;
     border:1px solid var(--border); padding:7px 11px; border-radius:7px;
-    color:var(--text); font-size:12.5px; background:var(--surface-2); white-space:nowrap;
+    color:var(--text); font-size:12.5px; background:var(--surface-2);
+    white-space:normal; min-width:0; max-width:100%; line-height:1.35;
   }
   @media (hover:hover) and (pointer:fine){ .scan-links a:hover{border-color:var(--cyan); color:var(--cyan);} }
   .scan-actions{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px;}
@@ -194,7 +195,7 @@
     cursor:pointer;
   }
   select:hover, .btn:hover{border-color:var(--text-faint);}
-  .btn{display:inline-flex; align-items:center; gap:6px; white-space:nowrap;}
+  .btn{display:inline-flex; align-items:center; gap:6px; white-space:normal; min-width:0;}
   .btn.primary{background:var(--red); border-color:var(--red); color:#160707; font-weight:600;}
   .btn.primary:hover{background:#ea6362;}
   .btn.ghost{background:transparent;}
@@ -239,11 +240,12 @@
   .badge{
     font-family:var(--mono); font-size:10.5px; letter-spacing:.03em;
     padding:3px 7px; border-radius:5px; border:1px solid var(--border);
-    color:var(--text-faint); background:var(--surface-2); white-space:nowrap;
+    color:var(--text-faint); background:var(--surface-2); white-space:normal; min-width:0;
   }
   .badge.star{color:#16130a; background:var(--amber); border-color:var(--amber); font-weight:700;}
   .badge.cycle{color:var(--text-dim);}
   .badge.direct{color:#062b1c; background:var(--green); border-color:var(--green); font-weight:700;}
+  .badge.unavailable{color:var(--amber); background:transparent; border:1px solid var(--amber); font-weight:700;}
 
   .poste{font-family:var(--mono); font-size:16px; font-weight:700; line-height:1.3;}
   .entreprise{font-size:13.5px; color:var(--text-dim);}
@@ -261,6 +263,7 @@
     border:1px solid var(--border); padding:6px 10px; border-radius:7px; color:var(--text);
   }
   @media (hover:hover) and (pointer:fine){ .card-links a:hover{border-color:var(--cyan); color:var(--cyan);} }
+  .card-links a.link-unavailable{ border-style:dashed; color:var(--text-faint); }
 
   .track{border-top:1px solid var(--border-soft); padding-top:10px; display:flex; flex-direction:column; gap:8px;}
   .track-row{display:flex; gap:8px; align-items:center;}
@@ -382,6 +385,7 @@
       <div class="scan-actions">
         <button class="btn primary" id="scanNowBtn" type="button">🔎 Scanner — Ciblé</button>
         <button class="btn secondary" id="scanWideBtn" type="button">🌐 Scanner — Élargi</button>
+        <button class="btn ghost" id="verifyBtn" type="button">🔄 Vérifier annonces enregistrées</button>
         <button class="btn ghost" id="configKeyBtn" type="button">🔑 Clé API</button>
         <button class="btn ghost" id="syncBtn" type="button"><span id="syncDot" class="sync-dot" title="Synchro désactivée"></span>&nbsp;Synchro ☁️</button>
       </div>
@@ -515,7 +519,9 @@
       <div class="field"><label>Début du contrat</label><input id="f-debut" placeholder="ex : Septembre 2027"></div>
     </div>
     <div class="field"><label>Email de contact</label><input id="f-email" type="email" placeholder="si publié sur l'annonce"></div>
+    <div class="field"><label>Téléphone de contact</label><input id="f-telephone" type="tel" placeholder="si publié sur l'annonce"></div>
     <div class="field"><label>Lien officiel pour candidater *</label><input id="f-lien" placeholder="https://…"></div>
+    <div class="field"><label>Lien encore consultable ?</label><select id="f-lienConsultable"><option value="oui">Oui</option><option value="non">Non — mort/expiré (on garde l'annonce si email/tél dispo)</option></select></div>
     <div class="field"><label>Notes / missions</label><textarea id="f-missions"></textarea></div>
     <div class="modal-actions">
       <button class="btn ghost" id="cancelAdd">Annuler</button>
@@ -971,6 +977,26 @@
     document.getElementById('syncModalOverlay').classList.add('open');
   }
   function closeSyncModal(){ document.getElementById('syncModalOverlay').classList.remove('open'); }
+  // Teste l'accès à un bin JSONBin avec re-essais : juste après la création d'un bin, JSONBin peut
+  // mettre quelques secondes à propager la nouvelle Master Key — l'API renvoie alors un 403
+  // TEMPORAIRE même quand la paire clé/Bin ID est en réalité correcte. On ne conclut à un vrai
+  // problème (clé et bin qui ne correspondent pas) qu'après plusieurs échecs consécutifs.
+  async function testJsonBinAccess(apiKey, binId, retries=0, delayMs=1500){
+    let lastResp = null, lastErr = null;
+    for(let attempt=0; attempt<=retries; attempt++){
+      try{
+        lastResp = await fetch(`${JSONBIN}/${binId}/latest`, { headers:{ 'X-Master-Key':apiKey, 'X-Bin-Meta':'false' }, signal: AbortSignal.timeout(8000) });
+        if(lastResp.status!==403 || attempt===retries) return lastResp;
+      }catch(e){
+        lastErr = e;
+        if(attempt===retries) throw e;
+      }
+      await new Promise(r=>setTimeout(r, delayMs));
+    }
+    if(lastResp) return lastResp;
+    throw lastErr;
+  }
+
   async function confirmSyncConnect(){
     const apiKey = document.getElementById('f-sync-key').value.trim();
     const binField = document.getElementById('f-sync-bin');
@@ -987,17 +1013,21 @@
     btn.disabled = true; btn.textContent = 'Connexion…';
     statusEl.style.color = 'var(--amber)';
     try{
+      let justCreated = false;
       if(!binId){
         statusEl.textContent = 'Création du bin cloud…';
         binId = await cloudCreate(apiKey);
         binField.value = binId;
         statusEl.style.color='var(--green)';
         statusEl.textContent = '✅ Bin créé ! ID : ' + binId + ' — NOTE-LE pour connecter tes autres appareils à ce même bin.';
-        await new Promise(r=>setTimeout(r, 1600));
+        await new Promise(r=>setTimeout(r, 1000)); // laisse le temps à JSONBin de propager la clé avant le 1er test
+        justCreated = true;
       } else {
         statusEl.textContent = 'Test de connexion…';
       }
-      const test = await fetch(`${JSONBIN}/${binId}/latest`, { headers:{ 'X-Master-Key':apiKey, 'X-Bin-Meta':'false' }, signal: AbortSignal.timeout(8000) });
+      // Bin fraîchement créé : jusqu'à 3 re-essais espacés (propagation JSONBin). Bin existant déjà
+      // fourni par l'utilisateur : 1 re-essai, juste pour absorber un aléa réseau ponctuel.
+      const test = await testJsonBinAccess(apiKey, binId, justCreated ? 3 : 1);
       if(test.status===403){
         statusEl.style.color='var(--red)';
         statusEl.textContent = "⚠️ Accès refusé (403) — cette Master Key n'a pas accès à ce Bin ID (souvent : ils ne viennent pas de la même connexion JSONBin, ou le bin a été créé avec une autre clé).";
@@ -1287,6 +1317,7 @@
             ${!item.cfa ? `<span class="badge direct">🏢 CANDIDATURE DIRECTE</span>` : ''}
             ${item.cyberFocus ? `<span class="badge cyber">🛡️ CYBERSÉCURITÉ</span>` : ''}
             ${item.accessibleBac ? `<span class="badge star">⭐ ACCESSIBLE BAC</span>` : ''}
+            ${item.lienConsultable===false ? `<span class="badge unavailable">⚠️ NON CONSULTABLE EN LIGNE</span>` : ''}
           </div>
         </div>
         <div>
@@ -1301,11 +1332,13 @@
           <div><span class="ic">🚩</span> Début : ${escapeHtml(item.debut||'—')}</div>
           <div class="full"><span class="ic">⏳</span> Échéance : ${escapeHtml(item.echeance||'—')}</div>
           <div class="full"><span class="ic">✉️</span> ${item.email ? escapeHtml(item.email) : 'Non publié'}</div>
+          ${item.telephone ? `<div class="full"><span class="ic">📞</span> ${escapeHtml(item.telephone)}</div>` : ''}
         </div>
         ${item.missions ? `<div class="missions">${escapeHtml(item.missions)}</div>` : ''}
         <div class="card-links">
-          <a href="${escapeHtml(item.lien)}" target="_blank" rel="noopener noreferrer">🔗 Lien officiel</a>
+          ${item.lien && item.lien!=='#' ? `<a href="${escapeHtml(item.lien)}" target="_blank" rel="noopener noreferrer" class="${item.lienConsultable===false?'link-unavailable':''}">${item.lienConsultable===false ? '🔗 Lien (non consultable)' : '🔗 Lien officiel'}</a>` : ''}
           ${item.email ? `<a href="mailto:${escapeHtml(item.email)}">✉️ ${escapeHtml(item.email)}</a>` : ''}
+          ${item.telephone ? `<a href="tel:${escapeHtml(String(item.telephone).replace(/[^\d+]/g,''))}">📞 ${escapeHtml(item.telephone)}</a>` : ''}
           <button class="btn ghost edit-btn" data-id="${escapeHtml(item.id)}" style="font-size:12.5px;padding:6px 10px;">✏️ Modifier</button>
           <button class="btn ghost delete-btn" data-id="${escapeHtml(item.id)}" style="font-size:12.5px;padding:6px 10px;">🗑️ Supprimer</button>
         </div>
@@ -1509,7 +1542,9 @@
     document.getElementById('f-echeance').value    = item.echeance || '';
     document.getElementById('f-debut').value       = item.debut || '';
     document.getElementById('f-email').value       = item.email || '';
+    document.getElementById('f-telephone').value   = item.telephone || '';
     document.getElementById('f-lien').value        = item.lien === '#' ? '' : (item.lien || '');
+    document.getElementById('f-lienConsultable').value = item.lienConsultable===false ? 'non' : 'oui';
     document.getElementById('f-missions').value    = item.missions || '';
   }
 
@@ -1526,11 +1561,12 @@
       const item = allListings().find(x=>x.id===editingId);
       if(item) fillModalFields(item);
     } else {
-      ['poste','entreprise','cfa','lieu','niveau','salaire','date','echeance','debut','email','lien','missions'].forEach(f=>{
+      ['poste','entreprise','cfa','lieu','niveau','salaire','date','echeance','debut','email','telephone','lien','missions'].forEach(f=>{
         const el=document.getElementById('f-'+f); if(el) el.value='';
       });
       document.getElementById('f-cycle').value = '2027';
       document.getElementById('f-bac').value = 'non';
+      document.getElementById('f-lienConsultable').value = 'oui';
     }
     document.getElementById('modalOverlay').classList.add('open');
   }
@@ -1561,7 +1597,9 @@
       echeance:      document.getElementById('f-echeance').value.trim(),
       debut:         document.getElementById('f-debut').value.trim(),
       email:         document.getElementById('f-email').value.trim() || null,
+      telephone:     document.getElementById('f-telephone').value.trim() || null,
       lien:          lien || '#',
+      lienConsultable: document.getElementById('f-lienConsultable').value !== 'non',
       missions:      document.getElementById('f-missions').value.trim()
     };
 
@@ -1654,11 +1692,48 @@
     str = String(str).trim();
     if(str.endsWith('ms')) return parseFloat(str) || null;
     let totalMs = 0, matched = false;
+    const hMatch = str.match(/([\d.]+)\s*h(?!z)/i);
     const mMatch = str.match(/([\d.]+)\s*m(?!s)/);
     const sMatch = str.match(/([\d.]+)\s*s/);
+    if(hMatch){ totalMs += parseFloat(hMatch[1])*3600000; matched = true; }
     if(mMatch){ totalMs += parseFloat(mMatch[1])*60000; matched = true; }
     if(sMatch){ totalMs += parseFloat(sMatch[1])*1000; matched = true; }
     return matched && totalMs>0 ? totalMs : null;
+  }
+
+  // Extrait un délai réel + la nature de la limite (jour/minute) depuis le message d'erreur Groq
+  // lui-même, ex: "...on requests per day (RPD): Limit 250, Used 250... Please try again in 3h2m45.36s."
+  // Ce texte vient du CORPS de la réponse HTTP, lisible même quand les en-têtes de quota sont
+  // masqués par CORS — donc bien plus fiable qu'un repli fixe pour un temps d'attente réel.
+  function parseGroqRateLimitMessage(msg){
+    if(!msg) return { waitMs:null, scope:null };
+    const str = String(msg);
+    let scope = null;
+    if(/requests?\s*per\s*day|tokens?\s*per\s*day|\bRPD\b|\bTPD\b/i.test(str)) scope = 'day';
+    else if(/requests?\s*per\s*minute|tokens?\s*per\s*minute|\bRPM\b|\bTPM\b/i.test(str)) scope = 'minute';
+    const m = str.match(/try again in\s+([0-9hms.]+)/i);
+    const waitMs = m ? parseGroqDuration(m[1]) : null;
+    return { waitMs, scope };
+  }
+
+  // Repli raisonné (pas une certitude) quand Groq confirme un quota JOURNALIER dépassé mais sans
+  // délai exploitable dans le message : les quotas Groq se réinitialisent à minuit UTC.
+  function msUntilNextUtcMidnight(){
+    const now = new Date();
+    const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()+1, 0,0,0,0);
+    return next - now.getTime();
+  }
+
+  // Formatage FR d'une durée en ms, avec heures si besoin (au lieu d'un mm:ss qui devient absurde
+  // sur un délai de plusieurs heures).
+  function fmtDurationFr(ms){
+    const totalS = Math.max(0, Math.ceil(ms/1000));
+    const h = Math.floor(totalS/3600);
+    const m = Math.floor((totalS%3600)/60);
+    const s = totalS%60;
+    if(h>0) return `${h} h ${String(m).padStart(2,'0')}min`;
+    if(m>0) return `${m} min ${String(s).padStart(2,'0')}s`;
+    return `${s}s`;
   }
 
   // compound-beta gère la recherche web en interne et renvoie le texte final en une seule
@@ -1689,7 +1764,20 @@
 
     if(response.status===401 || response.status===403) throw new Error('BAD_KEY');
     if(response.status===413) throw new Error('PAYLOAD_TOO_LARGE');
-    if(response.status===429) throw new Error('RATE_LIMIT');
+    if(response.status===429){
+      // Le corps JSON reste lisible même quand les en-têtes de quota sont masqués par CORS, et
+      // contient le VRAI délai + la limite précise touchée (jour ou minute) — bien plus fiable
+      // qu'un repli fixe pour afficher un temps d'attente réel.
+      let detail = { waitMs:null, scope:null };
+      try{
+        const body = await response.json();
+        const msg = body && body.error && body.error.message;
+        if(msg) detail = parseGroqRateLimitMessage(msg);
+      }catch(e){ /* corps illisible — le gestionnaire d'erreur retombera sur son repli */ }
+      const err = new Error('RATE_LIMIT');
+      err.detail = detail;
+      throw err;
+    }
     if(!response.ok) throw new Error('HTTP_'+response.status);
     const data = await response.json();
     const msg = data.choices && data.choices[0] && data.choices[0].message;
@@ -1705,14 +1793,16 @@
   // Hors-profil : filet de sécurité si le modèle renvoie quand même un poste commercial/vente malgré le prompt.
   const OFF_TOPIC_POSTE_RX = /commercial|business\s*develop|charg[ée]\s+de\s+client[eè]le|conseiller\s+client[eè]le|\bvente\b|vendeur|prospection\s+commerciale|account\s+manager/i;
 
-  /* ============ COOLDOWN SCAN (respecte la vraie limite Groq quand connue, sinon repli fixe) ============ */
+  /* ============ COOLDOWN SCAN (respecte la vraie limite Groq quand connue, sinon repli qui s'allonge) ============ */
   let scanCooldownUntil = 0; // timestamp ms ; 0 = pas de cooldown actif
+  let scanCooldownScope = null; // 'day' | 'minute' | null (origine inconnue) — pour le libellé affiché
   let scanCooldownTimer = null;
+  let consecutiveRateLimitHits = 0; // remis à 0 dès qu'un appel Groq réussit ; sert au repli progressif
 
-  function applyScanCooldown(ms){
+  function applyScanCooldown(ms, scope){
     if(!ms || ms<=0) return;
     const until = Date.now() + ms;
-    if(until > scanCooldownUntil) scanCooldownUntil = until; // ne raccourcit jamais un cooldown déjà en cours
+    if(until > scanCooldownUntil){ scanCooldownUntil = until; scanCooldownScope = scope || null; } // ne raccourcit jamais un cooldown déjà en cours
     tickScanCooldown();
   }
 
@@ -1722,22 +1812,61 @@
     const remaining = scanCooldownUntil - Date.now();
     const cooling = remaining > 0;
 
-    ['scanNowBtn','scanWideBtn'].forEach(id=>{
+    ['scanNowBtn','scanWideBtn','verifyBtn'].forEach(id=>{
       const b = document.getElementById(id);
       if(b) b.disabled = cooling;
     });
 
     if(!cooling){
-      scanCooldownUntil = 0;
+      scanCooldownUntil = 0; scanCooldownScope = null;
       if(label) label.textContent = '';
       return;
     }
     if(label){
-      const s = Math.ceil(remaining/1000);
-      const mm = Math.floor(s/60), ss = s%60;
-      label.textContent = `⏱️ Prochain scan possible dans ${mm>0 ? mm+' min '+String(ss).padStart(2,'0')+'s' : ss+'s'} (limite Groq)`;
+      const scopeTxt = scanCooldownScope==='day' ? ' — quota JOURNALIER Groq' : (scanCooldownScope==='minute' ? ' — limite par minute' : '');
+      label.textContent = `⏱️ Prochain scan possible dans ${fmtDurationFr(remaining)} (limite Groq${scopeTxt})`;
     }
     scanCooldownTimer = setTimeout(tickScanCooldown, 1000);
+  }
+
+  // Gestionnaire d'erreur partagé (scanLive + verifySavedListings partagent le même quota Groq).
+  // Pour RATE_LIMIT : utilise en priorité le vrai délai extrait du message Groq (err.detail) ; à
+  // défaut, un repli qui s'allonge à chaque échec consécutif (60s→3min→8min→20min) au lieu d'un
+  // 60s fixe systématiquement faux quand la vraie limite touchée est journalière (RPD).
+  function handleGroqError(err, statusEl){
+    console.error('Appel Groq impossible', err);
+    statusEl.className = 'scan-status err';
+    if(err && err.message==='BAD_KEY'){
+      statusEl.textContent = "⚠️ Clé API Groq refusée — vérifie qu'elle est correcte (ou régénère-la sur console.groq.com/keys), puis réessaie.";
+      openKeyModal();
+    }else if(err && err.message==='PAYLOAD_TOO_LARGE'){
+      statusEl.textContent = "⚠️ Requête trop volumineuse pour Groq (413). Réessaie avec moins d'annonces à la fois.";
+    }else if(err && err.message==='RATE_LIMIT'){
+      consecutiveRateLimitHits++;
+      const detail = err.detail;
+      let waitMs = (detail && detail.waitMs) || lastGroqRateInfo.retryAfterMs || lastGroqRateInfo.resetRequestsMs;
+      const scope = (detail && detail.scope) || null;
+      let estimated = false;
+      if(!waitMs){
+        estimated = true;
+        if(scope==='day'){
+          waitMs = msUntilNextUtcMidnight();
+        }else{
+          const fallbackSteps = [60000, 180000, 480000, 1200000]; // 1min, 3min, 8min, 20min
+          waitMs = fallbackSteps[Math.min(consecutiveRateLimitHits-1, fallbackSteps.length-1)];
+        }
+      }
+      applyScanCooldown(waitMs, scope);
+      const waitTxt = fmtDurationFr(waitMs);
+      const scopeLabel = scope==='day'
+        ? ' (quota JOURNALIER Groq atteint — ne repart pas avant plusieurs heures)'
+        : (scope==='minute' ? ' (limite par minute)' : '');
+      statusEl.textContent = `⚠️ Limite de requêtes Groq atteinte${scopeLabel} — prochain essai possible dans ${estimated?'environ ':''}${waitTxt}${estimated?' (estimation)':''} (compte à rebours sous les boutons).`;
+    }else if(err instanceof TypeError){
+      statusEl.textContent = "⚠️ Impossible de joindre l'API Groq (connexion coupée, ou bloquée par le navigateur/l'extension). Vérifie ta connexion et réessaie ; si ça persiste, utilise les liens juste au-dessus en attendant.";
+    }else{
+      statusEl.textContent = "⚠️ L'appel a échoué (" + (err && err.message ? err.message : 'erreur inconnue') + "). Réessaie, ou utilise les liens juste au-dessus en attendant.";
+    }
   }
 
   async function scanLive(mode = 'targeted'){
@@ -1762,6 +1891,7 @@
     btn.disabled = true;
     document.getElementById('scanNowBtn').disabled = true;
     document.getElementById('scanWideBtn').disabled = true;
+    document.getElementById('verifyBtn').disabled = true;
     const originalLabel = btn.textContent;
     btn.textContent = mode === 'wide' ? '🌐 Recherche élargie…' : '🔎 Recherche en cours…';
     statusEl.className = 'scan-status';
@@ -1769,24 +1899,25 @@
 
     const knownShort = allListings().slice(0,10).map(i=>`${i.entreprise}|${i.poste}`).join('\n');
 
-    const promptTargeted = `Offres alternance à Rennes (35) ou -1h, rentrée 2027. Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure, Technicien réseau, Technicien support & cybersécurité. Sources : AFTEC, MyDigitalSchool, ESNA, CMA Bruz, Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole, SNCF, ACCEIS, Nomios, Axido, Airbus Cyber. Priorité aux offres accessibles après le Bac (accessibleBac:true). Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels (administration systèmes/réseaux, support, exploitation, sécurité). Avant de renvoyer un lien, vérifie qu'il ouvre bien une page consultable et à jour (annonce toujours en ligne) — exclus tout lien mort, expiré, ou renvoyant une page d'erreur/vide.
+    const promptTargeted = `Offres alternance à Rennes (35) ou -1h, rentrée 2027. Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure, Technicien réseau, Technicien support & cybersécurité. Sources : AFTEC, MyDigitalSchool, ESNA, CMA Bruz, Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole, SNCF, ACCEIS, Nomios, Axido, Airbus Cyber. Priorité aux offres accessibles après le Bac (accessibleBac:true). Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels (administration systèmes/réseaux, support, exploitation, sécurité). Avant de renvoyer une offre, vérifie si son lien ouvre une page consultable et à jour. Si le lien est mort, expiré, ou renvoie une page d'erreur/vide MAIS qu'un email ou un téléphone de contact est trouvable pour cette offre ou cet employeur, inclus-la quand même avec lienConsultable:false (garde le lien tel quel s'il existe, sinon '#') — n'exclus une offre que si elle n'a NI lien consultable NI email NI téléphone.
 
 Déjà au dossier :
 ${knownShort}
 
-JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, lien, secteur, missions. Max 3 nouvelles. Si rien : [].`;
+JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, lienConsultable, secteur, missions. Max 3 nouvelles. Si rien : [].`;
 
-    const promptWide = `Recherche web libre : offres alternance informatique/cybersécurité Rennes (35) ou -1h, rentrée 2027. Tous niveaux : BTS SIO SISR (accessible Bac), Bachelor, Licence Pro, Master cybersécurité (Bac+3 à Bac+5). Cherche aussi intitulés : Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier. Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels. Avant de renvoyer un lien, vérifie qu'il ouvre bien une page consultable et à jour (annonce toujours en ligne) — exclus tout lien mort, expiré, ou renvoyant une page d'erreur/vide.
+    const promptWide = `Recherche web libre : offres alternance informatique/cybersécurité Rennes (35) ou -1h, rentrée 2027. Tous niveaux : BTS SIO SISR (accessible Bac), Bachelor, Licence Pro, Master cybersécurité (Bac+3 à Bac+5). Cherche aussi intitulés : Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier. Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels. Avant de renvoyer une offre, vérifie si son lien ouvre une page consultable et à jour. Si le lien est mort, expiré, ou renvoie une page d'erreur/vide MAIS qu'un email ou un téléphone de contact est trouvable pour cette offre ou cet employeur, inclus-la quand même avec lienConsultable:false (garde le lien tel quel s'il existe, sinon '#') — n'exclus une offre que si elle n'a NI lien consultable NI email NI téléphone.
 
 Déjà au dossier :
 ${knownShort}
 
-JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, lien, secteur, missions, niveauCible (BTS/Bachelor/Licence Pro/Master). Max 3 nouvelles. Si rien : [].`;
+JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, lienConsultable, secteur, missions, niveauCible (BTS/Bachelor/Licence Pro/Master). Max 3 nouvelles. Si rien : [].`;
 
     const prompt = mode === 'wide' ? promptWide : promptTargeted;
 
     try{
       const text = await callGroqWithSearch(prompt);
+      consecutiveRateLimitHits = 0; // reset : cet appel a réussi, une éventuelle limite précédente est levée
       const found = extractJsonArray(text);
 
       let added = 0;
@@ -1806,7 +1937,8 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
           accessibleBac: !!it.accessibleBac,
           salaire:it.salaire||'', datePublication:it.datePublication || new Date().toISOString().slice(0,10),
           echeance:it.echeance||'', debut:it.debut||'',
-          email:it.email||null, lien:it.lien||'#',
+          email:it.email||null, telephone:it.telephone||null,
+          lien:it.lien||'#', lienConsultable: it.lienConsultable===false ? false : true,
           secteur:it.secteur||'', cycle: /2027/.test((it.datePublication||'')+(it.echeance||'')+(it.debut||'')) ? '2027' : '2026',
           missions:it.missions||'',
           niveauCible: it.niveauCible||'BTS',
@@ -1868,27 +2000,117 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
         applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
       }
     }catch(err){
-      console.error('Scan live impossible', err);
-      statusEl.className = 'scan-status err';
-      if(err && err.message==='BAD_KEY'){
-        statusEl.textContent = "⚠️ Clé API Groq refusée — vérifie qu'elle est correcte (ou régénère-la sur console.groq.com/keys), puis réessaie.";
-        openKeyModal();
-      }else if(err && err.message==='PAYLOAD_TOO_LARGE'){
-        statusEl.textContent = "⚠️ Requête trop volumineuse pour Groq (413). Réessaie — le prompt a été allégé dans cette version.";
-      }else if(err && err.message==='RATE_LIMIT'){
-        const waitMs = lastGroqRateInfo.retryAfterMs || lastGroqRateInfo.resetRequestsMs || 60000;
-        applyScanCooldown(waitMs);
-        const waitS = Math.ceil(waitMs/1000);
-        const waitTxt = waitS < 60 ? waitS+'s' : Math.ceil(waitS/60)+' min';
-        statusEl.textContent = `⚠️ Limite de requêtes Groq atteinte — prochain scan possible dans ${waitTxt} environ (compte à rebours sous les boutons).`;
-      }else if(err instanceof TypeError){
-        statusEl.textContent = "⚠️ Impossible de joindre l'API Groq (connexion coupée, ou bloquée par le navigateur/l'extension). Vérifie ta connexion et réessaie ; si ça persiste, utilise les liens juste au-dessus en attendant.";
-      }else{
-        statusEl.textContent = "⚠️ Le scan a échoué (" + (err && err.message ? err.message : 'erreur inconnue') + "). Réessaie, ou utilise les liens juste au-dessus en attendant.";
-      }
+      handleGroqError(err, statusEl);
     }finally{
       btn.textContent = originalLabel;
       tickScanCooldown(); // réactive les boutons seulement si aucun cooldown n'est actif
+    }
+  }
+
+  /* ============ VÉRIFICATION DES ANNONCES DÉJÀ ENREGISTRÉES (même principe que le scan : lien mort
+     mais email/tél dispo → on garde, marqué non consultable ; jamais de suppression automatique) ============ */
+
+  // Applique un résultat de vérification sur une annonce existante (base ou custom), en réutilisant
+  // le même mécanisme que l'édition manuelle (_editedBase) : une annonce de base vérifiée devient une
+  // copie dans customListings qui la remplace à l'affichage — aucun nouvel état global à synchroniser.
+  function applyVerificationResult(id, patch){
+    const idx = customListings.findIndex(x=>x.id===id);
+    if(idx !== -1){
+      customListings[idx] = { ...customListings[idx], ...patch };
+      return;
+    }
+    const base = BASE_LISTINGS.find(x=>x.id===id);
+    if(base) customListings.push({ ...base, ...patch, _editedBase:true });
+  }
+
+  // Sélectionne les annonces à vérifier en priorité : jamais vérifiées d'abord, puis les plus
+  // anciennement vérifiées. Ignore celles sans lien, email ni téléphone (rien à vérifier).
+  function pickListingsToVerify(limit){
+    return allListings()
+      .filter(it => (it.lien && it.lien!=='#') || it.email || it.telephone)
+      .sort((a,b)=> (a._checkedAt||0) - (b._checkedAt||0))
+      .slice(0, limit);
+  }
+
+  async function verifySavedListings(){
+    if(scanCooldownUntil > Date.now()){
+      const statusEl = document.getElementById('scanStatus');
+      statusEl.className = 'scan-status err';
+      statusEl.textContent = "⏱️ Limite Groq — patiente encore un peu avant de relancer une vérification (compte à rebours sous les boutons).";
+      return;
+    }
+    const btn = document.getElementById('verifyBtn');
+    const statusEl = document.getElementById('scanStatus');
+
+    const key = groqApiKey || await loadGroqKey();
+    if(!key){
+      statusEl.className = 'scan-status err';
+      statusEl.textContent = "🔑 Il faut une clé API Groq (gratuite) pour vérifier les annonces — configure-la ci-dessous.";
+      openKeyModal();
+      return;
+    }
+
+    const batch = pickListingsToVerify(6);
+    if(batch.length === 0){
+      statusEl.className = 'scan-status ok';
+      statusEl.textContent = 'Aucune annonce avec lien, email ou téléphone à vérifier pour le moment.';
+      return;
+    }
+
+    btn.disabled = true;
+    document.getElementById('scanNowBtn').disabled = true;
+    document.getElementById('scanWideBtn').disabled = true;
+    const originalLabel = btn.textContent;
+    btn.textContent = '🔄 Vérification en cours…';
+    statusEl.className = 'scan-status';
+    statusEl.textContent = '';
+
+    const listText = batch.map((it,idx)=> `${idx+1}. id=${it.id} | ${it.entreprise} — ${it.poste} | lien:${it.lien && it.lien!=='#' ? it.lien : 'aucun'} | email connu:${it.email||'aucun'} | tél connu:${it.telephone||'aucun'}`).join('\n');
+    const prompt = `Vérifie l'état actuel de ces ${batch.length} offres d'alternance déjà au dossier (ouvre chaque lien listé s'il existe). Pour chacune : le lien est-il toujours consultable et à jour (lienConsultable:true), ou mort/expiré/page d'erreur/vide (lienConsultable:false) ? Si mort, cherche un email ou téléphone de contact pour cette offre ou cet employeur. L'offre reste au dossier dans tous les cas (lien OU email OU téléphone suffit) — ne cherche pas à la faire disparaître, seulement à préciser son état actuel.
+
+${listText}
+
+Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (reprendre l'id fourni tel quel), lienConsultable (true/false), email (string ou null — seulement si trouvé/nouveau), telephone (string ou null — seulement si trouvé/nouveau). Un objet par offre listée.`;
+
+    try{
+      const text = await callGroqWithSearch(prompt);
+      consecutiveRateLimitHits = 0; // reset : cet appel a réussi
+      const results = extractJsonArray(text);
+
+      let nowUnavailable = 0;
+      const resultIds = new Set();
+      results.forEach(r=>{
+        if(!r || !r.id) return;
+        const match = batch.find(b=>b.id===r.id);
+        if(!match) return;
+        resultIds.add(match.id);
+        const wasConsultable = match.lienConsultable !== false;
+        const patch = { lienConsultable: r.lienConsultable !== false, _checkedAt: Date.now() };
+        if(r.email) patch.email = r.email;
+        if(r.telephone) patch.telephone = r.telephone;
+        applyVerificationResult(match.id, patch);
+        if(wasConsultable && patch.lienConsultable===false) nowUnavailable++;
+      });
+      // Annonces du lot non renvoyées par le modèle : marquées vérifiées quand même (évite de les
+      // reproposer en boucle au prochain clic), état inchangé sinon.
+      batch.forEach(b=>{ if(!resultIds.has(b.id)) applyVerificationResult(b.id, { _checkedAt: Date.now() }); });
+
+      scheduleSave();
+      renderAll();
+
+      statusEl.className = 'scan-status ok';
+      statusEl.textContent = `✅ ${batch.length} annonce${batch.length>1?'s':''} vérifiée${batch.length>1?'s':''}` + (nowUnavailable>0
+        ? ` — ${nowUnavailable} désormais marquée${nowUnavailable>1?'s':''} non consultable en ligne (conservée${nowUnavailable>1?'s':''} car email/tél disponible, sinon pense à l'archiver).`
+        : ', toutes toujours consultables.');
+
+      if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
+        applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
+      }
+    }catch(err){
+      handleGroqError(err, statusEl);
+    }finally{
+      btn.textContent = originalLabel;
+      tickScanCooldown();
     }
   }
 
@@ -1899,10 +2121,10 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
   }
   function exportCsv(){
     const items = sortItems(allListings().filter(matchesFilters));
-    const headers = ['Référence','Poste','Entreprise','CFA','Lieu','Niveau demandé','Accessible Bac','Salaire','Date publication','Échéance','Début','Email','Lien','Statut','Notes'];
+    const headers = ['Référence','Poste','Entreprise','CFA','Lieu','Niveau demandé','Accessible Bac','Salaire','Date publication','Échéance','Début','Email','Téléphone','Lien','Lien consultable','Statut','Notes'];
     const rows = items.map(i=>{
       const st = getState(i.id);
-      return [i.ref||'', i.poste, i.entreprise, i.cfa||'', i.lieu, i.niveau, i.accessibleBac?'Oui':'Non', i.salaire, i.datePublication, i.echeance, i.debut||'', i.email||'', i.lien, (STATUS_MAP[st.status]||{}).l||'', st.notes||''].map(csvEscape).join(',');
+      return [i.ref||'', i.poste, i.entreprise, i.cfa||'', i.lieu, i.niveau, i.accessibleBac?'Oui':'Non', i.salaire, i.datePublication, i.echeance, i.debut||'', i.email||'', i.telephone||'', i.lien, i.lienConsultable===false?'Non':'Oui', (STATUS_MAP[st.status]||{}).l||'', st.notes||''].map(csvEscape).join(',');
     });
     const csv = [headers.map(csvEscape).join(','), ...rows].join('\r\n');
     const blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8;'});
@@ -2039,6 +2261,7 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
 
     document.getElementById('scanNowBtn').addEventListener('click', ()=>scanLive('targeted'));
     document.getElementById('scanWideBtn').addEventListener('click', ()=>scanLive('wide'));
+    document.getElementById('verifyBtn').addEventListener('click', verifySavedListings);
     document.getElementById('exportBtn').addEventListener('click', exportCsv);
     document.getElementById('downloadBackupBtn').addEventListener('click', downloadBackup);
     document.getElementById('restoreBackupBtn').addEventListener('click', triggerRestoreBackup);
