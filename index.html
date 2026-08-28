@@ -2479,56 +2479,78 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
   }
 
   /* ============ IMPORT CONTACTS — Excel (Carnet Cyber Rennes...) et/ou CSV Zimbra ============ */
-  // Accepte indifféremment un .xlsx généraliste OU un CSV Zimbra (y compris notre propre export
-  // ci-dessus, ré-importable tel quel) : les en-têtes sont reconnus par alias plutôt que par position,
-  // pour tolérer des noms de colonnes différents d'un fichier à l'autre.
-  const IMPORT_FIELD_ALIASES = {
-    entreprise: ['entreprise','societe','société','company','fileas','nom','raisonsociale','organisation','structure'],
-    email: ['email','e-mail','mail','adresseemail','courriel'],
-    telephone: ['workphone','telephone','téléphone','tel','phone','mobilephone','portable'],
-    lieu: ['workcity','ville','lieu','city','localisation'],
-    lien: ['homepageurl','lien','site','url','website','siteweb'],
-    poste: ['jobtitle','poste','fonction','intitulé','intitule','role','type','categorie','catégorie'],
-    notes: ['notes','commentaire','commentaires','remarque','remarques','note']
+  // Accepte indifféremment un .xlsx généraliste OU un CSV Zimbra — natif OU export "Outlook" avec
+  // en-têtes "First Name/Organization/Primary Email..." (c'est le format que Zimbra lui-même produit
+  // à l'export). Les en-têtes sont reconnues par correspondance PARTIELLE (contient), pas par égalité
+  // stricte : "Organization" (anglais), "Primary Email" ou "Nom société" doivent tous matcher, pas
+  // seulement les noms de colonnes exacts utilisés dans notre propre export.
+  const IMPORT_FIELD_PATTERNS = {
+    entreprise: ['organisation','organization','societe','company','entrepris','fileas','raisonsociale','structure','displayname'],
+    email: ['primaryemail','email','mail','courriel'], // "primaryemail" en tête = priorité si Primary + Secondary coexistent
+    telephone: ['phone','telephone','mobile','portable'],
+    lieu: ['city','ville','lieu','localisation'],
+    lien: ['url','website','siteweb','homepage','lien'],
+    poste: ['jobtitle','poste','fonction','intitule','role'],
+    notes: ['notes','commentaire','remarque']
   };
   function normalizeImportKey(k){
     return String(k||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
   }
+  function pickImportField(normalizedRow, field){
+    for(const pattern of IMPORT_FIELD_PATTERNS[field]){
+      for(const key of Object.keys(normalizedRow)){
+        if(key.includes(pattern) && String(normalizedRow[key]).trim()!==''){
+          return String(normalizedRow[key]).trim();
+        }
+      }
+    }
+    return '';
+  }
   function mapImportRow(row){
     const normalized = {};
     Object.keys(row).forEach(k=>{ normalized[normalizeImportKey(k)] = row[k]; });
-    const pick = field => {
-      for(const alias of IMPORT_FIELD_ALIASES[field]){
-        const v = normalized[normalizeImportKey(alias)];
-        if(v!==undefined && v!==null && String(v).trim()!=='') return String(v).trim();
-      }
-      return '';
-    };
+    const contactName = [normalized['firstname'], normalized['lastname']].filter(Boolean).join(' ').trim() || normalized['displayname'] || '';
+    // Statut de vérification éventuel (ex. nos propres carnets : colonne "Custom 2" = VÉRIFIÉ/NON VÉRIFIÉ)
+    const verifRaw = Object.values(normalized).find(v => /^(non[\s-]?)?v[ée]rifi[ée]e?$/i.test(String(v||'').trim()));
     return {
-      entreprise: pick('entreprise'), email: pick('email'), telephone: pick('telephone'),
-      lieu: pick('lieu'), lien: pick('lien'), posteRaw: pick('poste'), notes: pick('notes')
+      entreprise: pickImportField(normalized,'entreprise'),
+      email: pickImportField(normalized,'email'),
+      telephone: pickImportField(normalized,'telephone'),
+      lieu: pickImportField(normalized,'lieu'),
+      lien: pickImportField(normalized,'lien'),
+      posteRaw: pickImportField(normalized,'poste'),
+      notes: pickImportField(normalized,'notes'),
+      contactName,
+      verifStatut: verifRaw ? (/^non/i.test(String(verifRaw).trim()) ? 'email non vérifié' : 'email vérifié') : ''
     };
   }
-  const CFA_KEYWORDS_RX = /\bcfa\b|[ée]cole|\bschool\b|formation|campus|universit|lyc[ée]e|\biut\b/i;
+  // Le mot-clé CFA/école ne s'applique qu'au nom de l'ORGANISATION, jamais au rôle du contact : un
+  // Job Title "Campus / alternance" désigne un chargé de recrutement campus EN ENTREPRISE, pas une
+  // école — le vérifier contre posteRaw donnerait un faux positif.
+  const CFA_KEYWORDS_RX = /\bcfa\b|[ée]cole|\bschool\b|\bformation\b|\buniversit|\blyc[ée]e|\biut\b/i;
   function importedRowLooksLikeCfa(posteRaw, entreprise){
     if(/^cfa\s*\/?\s*[ée]cole$/i.test(posteRaw)) return true;   // notre propre export ("CFA / école")
     if(/^employeur\s+direct$/i.test(posteRaw)) return false;    // notre propre export ("Employeur direct")
-    if(CFA_KEYWORDS_RX.test(posteRaw)) return true;
     return CFA_KEYWORDS_RX.test(entreprise);
   }
   function buildImportedListing(mapped, idx){
     const isCfa = importedRowLooksLikeCfa(mapped.posteRaw, mapped.entreprise);
     const isOwnExportLabel = /^cfa\s*\/?\s*[ée]cole$/i.test(mapped.posteRaw) || /^employeur\s+direct$/i.test(mapped.posteRaw);
+    const noteParts = [];
+    if(mapped.contactName) noteParts.push(mapped.contactName);
+    if(mapped.posteRaw && !isOwnExportLabel) noteParts.push(mapped.posteRaw);
+    if(mapped.verifStatut) noteParts.push(mapped.verifStatut);
+    if(mapped.notes) noteParts.push(mapped.notes);
     return {
       id: 'import-'+Date.now()+'-'+idx, ref:null,
-      poste: (mapped.posteRaw && !isOwnExportLabel) ? mapped.posteRaw : 'Contact réseau — candidature spontanée',
+      poste: 'Contact réseau — candidature spontanée',
       option:'', entreprise: mapped.entreprise, cfa: isCfa ? mapped.entreprise : '',
       lieu: mapped.lieu, niveau:'', accessibleBac:false, salaire:'',
       datePublication: new Date().toISOString().slice(0,10), echeance:'', debut:'',
       email: mapped.email||null, telephone: mapped.telephone||null,
       lien: mapped.lien||'#',
       lienConsultable:false, // demandé explicitement : intégré comme annonce non accessible en ligne
-      secteur:'', cycle:'2027', missions: mapped.notes||'',
+      secteur:'', cycle:'2027', missions: noteParts.join(' — '),
       isImported:true, addedAt: Date.now()
     };
   }
