@@ -503,6 +503,8 @@
     <button class="btn ghost" id="exportBtn">⭳ Exporter en CSV</button>
     <button class="btn ghost" id="exportExcelBtn">📊 Export Excel (Bac + Hors CFA)</button>
     <button class="btn ghost" id="exportContactsBtn">📇 Export contacts (Zimbra)</button>
+    <button class="btn ghost" id="importContactsBtn">📥 Importer des contacts (Excel/Zimbra)</button>
+    <input type="file" id="importContactsInput" accept=".xlsx,.xls,.csv,text/csv" style="display:none;">
     <button class="btn ghost" id="downloadBackupBtn">💾 Télécharger une sauvegarde</button>
     <button class="btn ghost" id="restoreBackupBtn">📤 Restaurer une sauvegarde</button>
     <input type="file" id="restoreFileInput" accept="application/json,.json" style="display:none;">
@@ -2476,6 +2478,112 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     triggerFileDownload(blob, `radar-alternance-contacts-zimbra-${fileStamp()}.csv`);
   }
 
+  /* ============ IMPORT CONTACTS — Excel (Carnet Cyber Rennes...) et/ou CSV Zimbra ============ */
+  // Accepte indifféremment un .xlsx généraliste OU un CSV Zimbra (y compris notre propre export
+  // ci-dessus, ré-importable tel quel) : les en-têtes sont reconnus par alias plutôt que par position,
+  // pour tolérer des noms de colonnes différents d'un fichier à l'autre.
+  const IMPORT_FIELD_ALIASES = {
+    entreprise: ['entreprise','societe','société','company','fileas','nom','raisonsociale','organisation','structure'],
+    email: ['email','e-mail','mail','adresseemail','courriel'],
+    telephone: ['workphone','telephone','téléphone','tel','phone','mobilephone','portable'],
+    lieu: ['workcity','ville','lieu','city','localisation'],
+    lien: ['homepageurl','lien','site','url','website','siteweb'],
+    poste: ['jobtitle','poste','fonction','intitulé','intitule','role','type','categorie','catégorie'],
+    notes: ['notes','commentaire','commentaires','remarque','remarques','note']
+  };
+  function normalizeImportKey(k){
+    return String(k||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+  }
+  function mapImportRow(row){
+    const normalized = {};
+    Object.keys(row).forEach(k=>{ normalized[normalizeImportKey(k)] = row[k]; });
+    const pick = field => {
+      for(const alias of IMPORT_FIELD_ALIASES[field]){
+        const v = normalized[normalizeImportKey(alias)];
+        if(v!==undefined && v!==null && String(v).trim()!=='') return String(v).trim();
+      }
+      return '';
+    };
+    return {
+      entreprise: pick('entreprise'), email: pick('email'), telephone: pick('telephone'),
+      lieu: pick('lieu'), lien: pick('lien'), posteRaw: pick('poste'), notes: pick('notes')
+    };
+  }
+  const CFA_KEYWORDS_RX = /\bcfa\b|[ée]cole|\bschool\b|formation|campus|universit|lyc[ée]e|\biut\b/i;
+  function importedRowLooksLikeCfa(posteRaw, entreprise){
+    if(/^cfa\s*\/?\s*[ée]cole$/i.test(posteRaw)) return true;   // notre propre export ("CFA / école")
+    if(/^employeur\s+direct$/i.test(posteRaw)) return false;    // notre propre export ("Employeur direct")
+    if(CFA_KEYWORDS_RX.test(posteRaw)) return true;
+    return CFA_KEYWORDS_RX.test(entreprise);
+  }
+  function buildImportedListing(mapped, idx){
+    const isCfa = importedRowLooksLikeCfa(mapped.posteRaw, mapped.entreprise);
+    const isOwnExportLabel = /^cfa\s*\/?\s*[ée]cole$/i.test(mapped.posteRaw) || /^employeur\s+direct$/i.test(mapped.posteRaw);
+    return {
+      id: 'import-'+Date.now()+'-'+idx, ref:null,
+      poste: (mapped.posteRaw && !isOwnExportLabel) ? mapped.posteRaw : 'Contact réseau — candidature spontanée',
+      option:'', entreprise: mapped.entreprise, cfa: isCfa ? mapped.entreprise : '',
+      lieu: mapped.lieu, niveau:'', accessibleBac:false, salaire:'',
+      datePublication: new Date().toISOString().slice(0,10), echeance:'', debut:'',
+      email: mapped.email||null, telephone: mapped.telephone||null,
+      lien: mapped.lien||'#',
+      lienConsultable:false, // demandé explicitement : intégré comme annonce non accessible en ligne
+      secteur:'', cycle:'2027', missions: mapped.notes||'',
+      isImported:true, addedAt: Date.now()
+    };
+  }
+  function parseImportFile(file){
+    return new Promise((resolve, reject)=>{
+      if(typeof XLSX === 'undefined'){ reject(new Error('NO_XLSX')); return; }
+      const isCsv = /\.csv$/i.test(file.name) || file.type==='text/csv';
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('READ_ERROR'));
+      reader.onload = e => {
+        try{
+          const wb = isCsv ? XLSX.read(e.target.result, { type:'string' }) : XLSX.read(e.target.result, { type:'array' });
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          resolve(XLSX.utils.sheet_to_json(sheet, { defval:'' }));
+        }catch(err){ reject(err); }
+      };
+      if(isCsv) reader.readAsText(file, 'utf-8'); else reader.readAsArrayBuffer(file);
+    });
+  }
+  function triggerImportContacts(){ document.getElementById('importContactsInput').click(); }
+  async function handleImportContactsFile(e){
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ''; // permet de resélectionner le même fichier une prochaine fois
+    if(!file) return;
+    try{
+      const rows = await parseImportFile(file);
+      if(!rows.length){ alert('Aucune ligne exploitable trouvée dans ce fichier.'); return; }
+      let added = 0, skipped = 0, noName = 0;
+      rows.forEach((row, idx)=>{
+        const mapped = mapImportRow(row);
+        if(!mapped.entreprise){ noName++; return; }
+        const isDup = allListings().some(x =>
+          String(x.entreprise||'').toLowerCase()===mapped.entreprise.toLowerCase() ||
+          String(x.cfa||'').toLowerCase()===mapped.entreprise.toLowerCase()
+        );
+        if(isDup){ skipped++; return; }
+        customListings.push(buildImportedListing(mapped, idx));
+        added++;
+      });
+      scheduleSave();
+      renderAll();
+      updateScanHead();
+      alert(`✅ Import terminé : ${added} contact${added>1?'s':''} ajouté${added>1?'s':''} comme annonce${added>1?'s':''} non accessible${added>1?'s':''} en ligne`
+        + (skipped>0 ? `, ${skipped} déjà présent${skipped>1?'s':''} (ignoré${skipped>1?'s':''})` : '')
+        + (noName>0 ? `, ${noName} ligne${noName>1?'s':''} sans nom d'entreprise ignorée${noName>1?'s':''}` : '') + '.');
+    }catch(err){
+      console.error('Import contacts échoué', err);
+      if(err && err.message==='NO_XLSX'){
+        alert("⚠️ Le module d'import n'a pas pu se charger (connexion internet requise pour cette fonction). Réessaie avec une connexion active.");
+      }else{
+        alert("⚠️ Impossible de lire ce fichier. Vérifie qu'il s'agit bien d'un .xlsx ou d'un .csv valide (export Zimbra ou tableur de contacts).");
+      }
+    }
+  }
+
   /* ============ SAUVEGARDE LOCALE (fichier .json téléchargeable — restaurable sur n'importe quel appareil) ============ */
   async function downloadBackup(){
     const payload = {
@@ -2584,6 +2692,8 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     document.getElementById('exportBtn').addEventListener('click', exportCsv);
     document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
     document.getElementById('exportContactsBtn').addEventListener('click', exportContactsZimbra);
+    document.getElementById('importContactsBtn').addEventListener('click', triggerImportContacts);
+    document.getElementById('importContactsInput').addEventListener('change', handleImportContactsFile);
     document.getElementById('downloadBackupBtn').addEventListener('click', downloadBackup);
     document.getElementById('restoreBackupBtn').addEventListener('click', triggerRestoreBackup);
     document.getElementById('restoreFileInput').addEventListener('change', handleRestoreFile);
