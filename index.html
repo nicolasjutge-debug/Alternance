@@ -507,6 +507,7 @@
     <input type="file" id="importContactsInput" accept=".xlsx,.xls,.csv,text/csv" style="display:none;">
     <button class="btn ghost" id="downloadBackupBtn">💾 Télécharger une sauvegarde</button>
     <button class="btn ghost" id="restoreBackupBtn">📤 Restaurer une sauvegarde</button>
+    <button class="btn ghost" id="downloadLocalBackupBtn">🗄️ Secours local (avant dernière synchro)</button>
     <input type="file" id="restoreFileInput" accept="application/json,.json" style="display:none;">
     <button class="btn ghost" id="trashBtn" type="button">🗑️ Corbeille</button>
     <button class="btn ghost" id="resetBtn">↺ Réinitialiser mon suivi (statuts/notes)</button>
@@ -2651,6 +2652,33 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     document.getElementById('restoreFileInput').click();
   }
 
+  // Récupère l'instantané `_backup` (voir loadState) : le dossier tel qu'il était sur CET APPAREIL
+  // juste avant la dernière synchro cloud de cette session — pas retouché depuis. Utile si une synchro
+  // a remplacé des données locales plus récentes par une version cloud plus ancienne (le message
+  // "Données cloud plus récentes" ne veut pas toujours dire "plus complètes"). Même format que
+  // downloadBackup() : réutilisable directement avec le bouton "Restaurer une sauvegarde" ci-dessus.
+  async function downloadLocalBackupSnapshot(){
+    const res = await safeStorageGet(STORAGE_KEY + '_backup');
+    if(!res || !res.value){
+      alert("Aucun secours local trouvé sur cet appareil pour l'instant — il est créé à chaque ouverture de l'appli, à partir de ce qui était déjà enregistré ici. Réessaie après avoir rouvert l'appli au moins une fois.");
+      return;
+    }
+    let data;
+    try{ data = JSON.parse(res.value); }
+    catch(e){ alert("Le secours local est illisible (donnée corrompue)."); return; }
+    const payload = {
+      app:'radar-alternance-sio-sisr', version:1,
+      exportedAt: data.lastModified ? new Date(data.lastModified).toISOString() : new Date().toISOString(),
+      itemStates: data.itemStates||{}, customListings: data.customListings||[], customCfa: data.customCfa||[],
+      customEmployeurs: data.customEmployeurs||[], hiddenIds: data.hiddenIds||[], trash: data.trash||[],
+      lastScanDate: data.lastScanDate||null, lastModified: data.lastModified||null
+    };
+    const json = JSON.stringify(payload, null, 2);
+    const filename = `radar-alternance-secours-local-${fileStamp()}.json`;
+    const blob = new Blob([json], {type:'application/json'});
+    await triggerFileDownload(blob, filename);
+  }
+
   async function handleRestoreFile(e){
     const file = e.target.files && e.target.files[0];
     e.target.value = ''; // permet de resélectionner le même fichier une prochaine fois
@@ -2747,6 +2775,7 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     document.getElementById('importContactsInput').addEventListener('change', handleImportContactsFile);
     document.getElementById('downloadBackupBtn').addEventListener('click', downloadBackup);
     document.getElementById('restoreBackupBtn').addEventListener('click', triggerRestoreBackup);
+    document.getElementById('downloadLocalBackupBtn').addEventListener('click', downloadLocalBackupSnapshot);
     document.getElementById('restoreFileInput').addEventListener('change', handleRestoreFile);
     document.getElementById('resetBtn').addEventListener('click', resetTracking);
 
