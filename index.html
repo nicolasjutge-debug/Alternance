@@ -509,7 +509,6 @@
     <button class="btn ghost" id="restoreBackupBtn">📤 Restaurer une sauvegarde</button>
     <button class="btn ghost" id="mergeBackupBtn">🔀 Fusionner une sauvegarde</button>
     <button class="btn ghost" id="downloadLocalBackupBtn">🗄️ Secours local (avant dernière synchro)</button>
-    <button class="btn ghost" id="recoverCloudBtn">🕒 Récupérer une date (historique cloud)</button>
     <input type="file" id="restoreFileInput" accept="application/json,.json" style="display:none;">
     <input type="file" id="mergeFileInput" accept="application/json,.json" style="display:none;">
     <button class="btn ghost" id="trashBtn" type="button">🗑️ Corbeille</button>
@@ -1015,16 +1014,7 @@
   // Message JSONBin spécifique à la limite de taille du palier gratuit (100 Ko/bin) — distinct d'un
   // vrai souci de clé/bin, donc traité différemment : on allège la charge, on ne signale pas une
   // erreur de configuration à corriger.
-  // Prend aussi le code HTTP en compte (pas seulement le texte du message) : un vrai 413 est TOUJOURS
-  // un dépassement de taille par définition ("Payload Too Large"), mais son corps n'est pas forcément
-  // du JSON exploitable — souvent renvoyé par un intermédiaire réseau devant l'API JSONBin plutôt que
-  // par JSONBin elle-même, qui documente ses propres dépassements en 400 avec un message précis. Sans
-  // ce repli sur le statut, un 413 avec message illisible (message=null) n'était jamais reconnu comme
-  // un dépassement de taille : toute la logique d'allègement de la corbeille était ignorée et l'échec
-  // remontait tel quel à chaque synchro, sans jamais réessayer en réduisant la charge — d'où le "413
-  // toujours présent" malgré le message dédié déjà en place pour le cas 400.
-  function isJsonBinSizeLimitMessage(message, status){
-    if(status === 413) return true;
+  function isJsonBinSizeLimitMessage(message){
     return !!message && /cannot update a record over|over\s*100\s*k[ob]/i.test(message);
   }
 
@@ -1032,12 +1022,11 @@
     const wire = await compressPayload(payload);
     const r = await fetch(`${JSONBIN}/${binId}`, {
       method:'PUT', signal: AbortSignal.timeout(8000),
-      // X-Bin-Versioning:true est OBLIGATOIRE pour que JSONBin conserve un historique — sans lui
-      // (valeur par défaut de l'API : false), CHAQUE mise à jour écrase silencieusement la précédente
-      // et versionCount reste à 0 pour toujours. C'était la cause du message "Aucun historique de
-      // versions trouvé sur ce bin" : le header n'était jamais envoyé, donc rien n'était jamais archivé
-      // malgré le commentaire de recoverCloudVersionByDate qui supposait le versioning actif par défaut.
-      headers:{ 'Content-Type':'application/json', 'X-Master-Key': apiKey, 'X-Bin-Versioning':'true' },
+      // X-Bin-Versioning:false est OBLIGATOIRE ici : sans lui, JSONBin tente de créer une nouvelle
+      // version à chaque mise à jour — fonctionnalité indisponible sur le plan gratuit (403 "Versioning
+      // is not available for the Free users"). On ne s'en sert pas pour la synchro normale, donc on la
+      // désactive explicitement plutôt que de subir l'échec.
+      headers:{ 'Content-Type':'application/json', 'X-Master-Key': apiKey, 'X-Bin-Versioning': 'false' },
       body: JSON.stringify(wire)
     });
     if(r.ok) return { ok:true, status:r.status };
@@ -1054,7 +1043,7 @@
       let res = await pushPayloadToJsonBin(syncCfg.binId, syncCfg.apiKey, { ...base, trash });
       if(res.ok){ setSyncStatus('ok', '☁️ Synchronisé'); return true; }
 
-      if(isJsonBinSizeLimitMessage(res.message, res.status) && trash.length > 0){
+      if(isJsonBinSizeLimitMessage(res.message) && trash.length > 0){
         // La corbeille (snapshots complets des annonces supprimées) est ce qu'on peut sacrifier côté
         // CLOUD sans rien perdre côté données actives — elle reste intacte en LOCAL sur cet appareil,
         // juste pas synchronisée telle quelle.
@@ -1062,13 +1051,13 @@
           res = await pushPayloadToJsonBin(syncCfg.binId, syncCfg.apiKey, { ...base, trash: trash.slice(0,5) });
           if(res.ok){ setSyncStatus('ok', `☁️ Synchronisé (corbeille allégée pour le cloud — ${trash.length} entrée${trash.length>1?'s':''} restent en local)`); return true; }
         }
-        if(isJsonBinSizeLimitMessage(res.message, res.status)){
+        if(isJsonBinSizeLimitMessage(res.message)){
           res = await pushPayloadToJsonBin(syncCfg.binId, syncCfg.apiKey, { ...base, trash: [] });
           if(res.ok){ setSyncStatus('ok', `☁️ Synchronisé (corbeille exclue du cloud — trop volumineuse pour le palier gratuit JSONBin ; ${trash.length} entrée${trash.length>1?'s':''} restent en local sur cet appareil)`); return true; }
         }
       }
 
-      if(isJsonBinSizeLimitMessage(res.message, res.status)){
+      if(isJsonBinSizeLimitMessage(res.message)){
         setSyncStatus('err', `⚠️ Même sans la corbeille, le dossier dépasse les 100 Ko du palier gratuit JSONBin. Passe en Pro (jsonbin.io/pricing — jusqu'à 1 Mo), ou allège le dossier (notes/missions plus courtes, vieilles annonces supprimées).`);
       } else if(res.status===403){
         setSyncStatus('err', res.message
@@ -1084,7 +1073,7 @@
     const payload = { itemStates:{}, customListings:[], customCfa:[], customEmployeurs:[], hiddenIds:[], trash:[], lastScanDate:null, lastModified:0 };
     const r = await fetch(JSONBIN, {
       method:'POST', signal: AbortSignal.timeout(10000),
-      headers:{ 'Content-Type':'application/json', 'X-Master-Key': apiKey, 'X-Bin-Name':'radar-alternance', 'X-Private-Bin':'true' },
+      headers:{ 'Content-Type':'application/json', 'X-Master-Key': apiKey, 'X-Bin-Name':'radar-alternance', 'X-Private-Bin':'true', 'X-Bin-Versioning': 'false' },
       body: JSON.stringify(payload)
     });
     if(!r.ok){
@@ -2050,14 +2039,15 @@
   // Pour RATE_LIMIT : utilise en priorité le vrai délai extrait du message Groq (err.detail) ; à
   // défaut, un repli qui s'allonge à chaque échec consécutif (60s→3min→8min→20min) au lieu d'un
   // 60s fixe systématiquement faux quand la vraie limite touchée est journalière (RPD).
-  function handleGroqError(err, statusEl){
-    console.error('Appel Groq impossible', err);
+  function handleGroqError(err, statusEl, context){
+    console.error('Appel Groq impossible', err, context||'');
     statusEl.className = 'scan-status err';
+    const ctxTxt = context ? ` [${context}]` : '';
     if(err && err.message==='BAD_KEY'){
       statusEl.textContent = "⚠️ Clé API Groq refusée — vérifie qu'elle est correcte (ou régénère-la sur console.groq.com/keys), puis réessaie.";
       openKeyModal();
     }else if(err && err.message==='PAYLOAD_TOO_LARGE'){
-      statusEl.textContent = "⚠️ Requête trop volumineuse pour Groq (413). Réessaie avec moins d'annonces à la fois.";
+      statusEl.textContent = `⚠️ Requête trop volumineuse pour Groq (413)${ctxTxt}. Réessaie avec moins d'annonces à la fois.`;
     }else if(err && err.message==='RATE_LIMIT'){
       consecutiveRateLimitHits++;
       const detail = err.detail;
@@ -2217,7 +2207,7 @@ JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, a
         applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
       }
     }catch(err){
-      handleGroqError(err, statusEl);
+      handleGroqError(err, statusEl, mode==='wide' ? 'scan large' : 'scan ciblé');
     }finally{
       btn.textContent = originalLabel;
       tickScanCooldown(); // réactive les boutons seulement si aucun cooldown n'est actif
@@ -2349,7 +2339,7 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
         applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
       }
     }catch(err){
-      handleGroqError(err, statusEl);
+      handleGroqError(err, statusEl, `vérification (${sub.length} annonce${sub.length>1?'s':''})`);
     }finally{
       btn.textContent = originalLabel;
       tickScanCooldown();
@@ -2811,78 +2801,6 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     alert(summary ? `✅ Fusion terminée : ${summary}.` : "✅ Fusion terminée : rien de nouveau à ajouter, tout était déjà présent.");
   }
 
-  // Va chercher dans l'HISTORIQUE DES VERSIONS du bin JSONBin (activé par défaut, jusqu'à 1000
-  // versions conservées) la dernière version datant d'avant une date donnée — utile quand la donnée
-  // voulue n'est plus dans le secours local (celui-ci n'est jamais qu'un instantané "avant-dernière
-  // ouverture", pas un historique par date). Recherche dichotomique : quelques requêtes seulement,
-  // même avec des centaines de versions. Fusionne ensuite avec mergeStateData (rien n'est écrasé).
-  async function recoverCloudVersionByDate(){
-    if(!syncCfg || !syncCfg.apiKey || !syncCfg.binId){
-      alert("La synchro cloud n'est pas configurée sur cet appareil (bouton 🟢 Synchro) — sans elle, impossible d'aller chercher l'historique JSONBin.");
-      return;
-    }
-    const dateStr = prompt("Récupérer le dossier tel qu'il était à la fin de quelle date ? (JJ/MM/AAAA)", "29/08/2026");
-    if(!dateStr) return;
-    const m = dateStr.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-    if(!m){ alert("Format de date non reconnu — utilise JJ/MM/AAAA, ex: 29/08/2026."); return; }
-    const targetMs = new Date(+m[3], +m[2]-1, +m[1], 23, 59, 59, 999).getTime();
-
-    const btn = document.getElementById('recoverCloudBtn');
-    const originalLabel = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = '🔎 Recherche dans l\'historique cloud…';
-
-    try{
-      const countResp = await fetch(`${JSONBIN}/${syncCfg.binId}/versions/count`, { headers:{ 'X-Master-Key':syncCfg.apiKey } });
-      if(!countResp.ok) throw new Error('COUNT_FAILED');
-      const countJson = await countResp.json();
-      const maxVersion = (countJson && countJson.metadata && typeof countJson.metadata.versionCount === 'number')
-        ? countJson.metadata.versionCount - 1 : null;
-      if(maxVersion === null || maxVersion < 0){
-        alert("Aucun historique de versions trouvé sur ce bin (versioning désactivé, ou bin trop récent).");
-        return;
-      }
-
-      async function fetchVersion(v){
-        const r = await fetch(`${JSONBIN}/${syncCfg.binId}/${v}`, { headers:{ 'X-Master-Key':syncCfg.apiKey, 'X-Bin-Meta':'false' }, signal: AbortSignal.timeout(8000) });
-        if(!r.ok) return null;
-        // Décompression indispensable : cloudPush() pousse les sauvegardes compressées ({_gz:"<base64>"}),
-        // donc une version lue brute n'a pas de champ lastModified exploitable (toujours undefined) et
-        // la recherche par date ci-dessous échouait systématiquement même une fois l'historique activé.
-        try{ return await decompressPayload(await r.json()); }catch(e){ return null; }
-      }
-
-      // Dernière version dont lastModified <= targetMs (suppose l'ordre chronologique des versions,
-      // vrai en usage normal — un peu moins fiable en cas d'usage simultané sur 2 appareils).
-      let lo = 0, hi = maxVersion, best = null, bestData = null;
-      while(lo <= hi){
-        const mid = Math.floor((lo+hi)/2);
-        const data = await fetchVersion(mid);
-        const lm = data && typeof data.lastModified === 'number' ? data.lastModified : null;
-        if(lm !== null && lm <= targetMs){ best = mid; bestData = data; lo = mid+1; }
-        else{ hi = mid-1; }
-      }
-
-      if(best === null){
-        alert(`Rien trouvé avant le ${dateStr} — la version la plus ancienne conservée sur le bin est déjà postérieure à cette date.`);
-        return;
-      }
-
-      const foundDate = bestData.lastModified ? new Date(bestData.lastModified).toLocaleString('fr-FR') : 'date inconnue';
-      const nbItems = Object.keys(bestData.itemStates||{}).length;
-      const nbCustom = (bestData.customListings||[]).length + (bestData.customCfa||[]).length + (bestData.customEmployeurs||[]).length;
-      if(!confirm(`Version cloud trouvée : ${foundDate} (version ${best}/${maxVersion}).\n${nbItems} statut(s) enregistré(s), ${nbCustom} annonce(s)/employeur(s) personnalisé(s).\n\nFusionner ceci avec les données actuelles sur cet appareil ? Rien n'est supprimé, seulement complété.`)) return;
-
-      const summary = await mergeStateData(bestData);
-      alert(summary ? `✅ Fusion terminée avec la version du ${foundDate} : ${summary}.` : `✅ Version du ${foundDate} récupérée : rien de nouveau par rapport à ce qui est déjà là.`);
-    }catch(err){
-      alert("⚠️ Échec de la recherche dans l'historique cloud — vérifie ta connexion, ou que le versioning n'a pas été désactivé sur ce bin.");
-    }finally{
-      btn.disabled = false;
-      btn.textContent = originalLabel;
-    }
-  }
-
   /* ============ RESET ============ */
   async function resetTracking(){
     if(!confirm("Réinitialiser tous les statuts et notes ? Les annonces ajoutées manuellement (et celles trouvées par scan, y compris les CFA/employeurs découverts) seront aussi supprimées, les annonces de base supprimées individuellement seront restaurées, et la corbeille sera vidée définitivement. Cette action est irréversible.")) return;
@@ -2950,7 +2868,6 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     document.getElementById('restoreBackupBtn').addEventListener('click', triggerRestoreBackup);
     document.getElementById('mergeBackupBtn').addEventListener('click', triggerMergeBackup);
     document.getElementById('downloadLocalBackupBtn').addEventListener('click', downloadLocalBackupSnapshot);
-    document.getElementById('recoverCloudBtn').addEventListener('click', recoverCloudVersionByDate);
     document.getElementById('restoreFileInput').addEventListener('change', handleRestoreFile);
     document.getElementById('mergeFileInput').addEventListener('change', handleMergeFile);
     document.getElementById('resetBtn').addEventListener('click', resetTracking);
