@@ -2100,114 +2100,141 @@
     document.getElementById('scanWideBtn').disabled = true;
     document.getElementById('verifyBtn').disabled = true;
     const originalLabel = btn.textContent;
-    btn.textContent = mode === 'wide' ? '🌐 Recherche élargie…' : '🔎 Recherche en cours…';
     statusEl.className = 'scan-status';
     statusEl.textContent = '';
 
     const knownShort = allListings().slice(0,10).map(i=>`${i.entreprise}|${i.poste}`).join('\n');
+    const COMMON_HEAD = `alternance à Rennes (35) ou -1h, rentrée 2027. Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels (administration systèmes/réseaux, support, exploitation, sécurité). Avant de renvoyer une offre, vérifie si son lien ouvre une page consultable et à jour. Si le lien est mort, expiré, ou renvoie une page d'erreur/vide MAIS qu'un email ou un téléphone de contact est trouvable pour cette offre ou cet employeur, inclus-la quand même avec lienConsultable:false (garde le lien tel quel s'il existe, sinon '#') — n'exclus une offre que si elle n'a NI lien consultable NI email NI téléphone.`;
+    const FOOT_TARGETED = `\n\nDéjà au dossier :\n${knownShort}\n\nJSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, lienConsultable, secteur, missions. Max 2 nouvelles. Si rien : [].`;
+    const FOOT_WIDE = `\n\nDéjà au dossier :\n${knownShort}\n\nJSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, lienConsultable, secteur, missions, niveauCible (BTS/Bachelor/Licence Pro/Master). Max 2 nouvelles. Si rien : [].`;
 
-    const promptTargeted = `Offres alternance à Rennes (35) ou -1h, rentrée 2027. Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure, Technicien réseau, Technicien support & cybersécurité. Sources : AFTEC, MyDigitalSchool, ESNA, CMA Bruz, Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole, SNCF, ACCEIS, Nomios, Axido, Airbus Cyber. Priorité aux offres accessibles après le Bac (accessibleBac:true). Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels (administration systèmes/réseaux, support, exploitation, sécurité). Avant de renvoyer une offre, vérifie si son lien ouvre une page consultable et à jour. Si le lien est mort, expiré, ou renvoie une page d'erreur/vide MAIS qu'un email ou un téléphone de contact est trouvable pour cette offre ou cet employeur, inclus-la quand même avec lienConsultable:false (garde le lien tel quel s'il existe, sinon '#') — n'exclus une offre que si elle n'a NI lien consultable NI email NI téléphone.
+    // Découpé en plusieurs petites requêtes séquentielles au lieu d'une seule englobant tout : Groq
+    // limite compound-mini à UN appel d'outil de recherche par requête, et demander de fouiller 14
+    // sources + vérifier chaque lien en une fois dépassait régulièrement la limite de taille (413) —
+    // y compris en scan ciblé, pourtant plus restreint que le large (confirmé le 30/08/2026 : les deux
+    // modes étaient touchés). Réduire la portée de CHAQUE appel est le seul levier qu'on contrôle
+    // vraiment, puisque ces prompts ne dépendent pas du volume de données déjà au dossier (pas de lot à
+    // réduire comme pour la vérification).
+    const targetedGroups = [
+      { label:'CFA/écoles', body:`Offres ${COMMON_HEAD} Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Sources à vérifier en priorité : AFTEC, MyDigitalSchool, ESNA, CMA Bruz. Priorité aux offres accessibles après le Bac (accessibleBac:true).` },
+      { label:'jobboards', body:`Offres ${COMMON_HEAD} Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Sources à vérifier en priorité : Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole. Priorité aux offres accessibles après le Bac (accessibleBac:true).` },
+      { label:'employeurs ciblés', body:`Offres ${COMMON_HEAD} Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Sources à vérifier en priorité : SNCF, ACCEIS, Nomios, Axido, Airbus Cyber. Priorité aux offres accessibles après le Bac (accessibleBac:true).` }
+    ];
+    const wideGroups = [
+      { label:'BTS/Technicien', body:`Recherche web libre : ${COMMON_HEAD} Niveau : BTS SIO SISR (accessible Bac). Cherche aussi intitulés : Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier.` },
+      { label:'Bachelor/Licence Pro', body:`Recherche web libre : ${COMMON_HEAD} Niveaux : Bachelor, Licence Pro cybersécurité/informatique (Bac+3). Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier.` },
+      { label:'Master cybersécurité', body:`Recherche web libre : ${COMMON_HEAD} Niveau : Master cybersécurité (Bac+5). Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier.` }
+    ];
+    const groups = mode === 'wide' ? wideGroups : targetedGroups;
+    const foot = mode === 'wide' ? FOOT_WIDE : FOOT_TARGETED;
 
-Déjà au dossier :
-${knownShort}
-
-JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, lienConsultable, secteur, missions. Max 3 nouvelles. Si rien : [].`;
-
-    const promptWide = `Recherche web libre : offres alternance informatique/cybersécurité Rennes (35) ou -1h, rentrée 2027. Tous niveaux : BTS SIO SISR (accessible Bac), Bachelor, Licence Pro, Master cybersécurité (Bac+3 à Bac+5). Cherche aussi intitulés : Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier. Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels. Avant de renvoyer une offre, vérifie si son lien ouvre une page consultable et à jour. Si le lien est mort, expiré, ou renvoie une page d'erreur/vide MAIS qu'un email ou un téléphone de contact est trouvable pour cette offre ou cet employeur, inclus-la quand même avec lienConsultable:false (garde le lien tel quel s'il existe, sinon '#') — n'exclus une offre que si elle n'a NI lien consultable NI email NI téléphone.
-
-Déjà au dossier :
-${knownShort}
-
-JSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, lienConsultable, secteur, missions, niveauCible (BTS/Bachelor/Licence Pro/Master). Max 3 nouvelles. Si rien : [].`;
-
-    const prompt = mode === 'wide' ? promptWide : promptTargeted;
+    let totalAdded = 0, failedGroups = 0, lastError = null, rateLimited = false;
+    const allNewCfas = [], allNewEmps = [];
+    const knownCfaNames = [...CFA_NETWORKS, ...customCfa].map(c=>(c.nom||'').toLowerCase());
+    const knownEmpNames = customEmployeurs.map(e=>(e.nom||'').toLowerCase());
 
     try{
-      const text = await callGroqWithSearch(prompt, statusEl);
-      consecutiveRateLimitHits = 0; // reset : cet appel a réussi, une éventuelle limite précédente est levée
-      const found = extractJsonArray(text);
+      for(let gi=0; gi<groups.length; gi++){
+        const g = groups[gi];
+        btn.textContent = (mode === 'wide' ? '🌐 ' : '🔎 ') + `Recherche ${gi+1}/${groups.length} (${g.label})…`;
+        try{
+          const text = await callGroqWithSearch(g.body + foot, statusEl);
+          consecutiveRateLimitHits = 0; // reset : cet appel a réussi
+          const found = extractJsonArray(text);
 
-      let added = 0;
-      found.forEach(it=>{
-        if(!it || !it.poste || !it.entreprise) return;
-        if(OFF_TOPIC_POSTE_RX.test(it.poste)) return; // hors-profil (commercial/vente) — filtré même si le modèle l'a quand même renvoyé
-        const isDup = allListings().some(x =>
-          (x.lien && it.lien && x.lien===it.lien) ||
-          (String(x.poste||'').toLowerCase()===String(it.poste).toLowerCase() && String(x.entreprise||'').toLowerCase()===String(it.entreprise).toLowerCase())
-        );
-        if(isDup) return;
-        customListings.push({
-          id:'scan-'+Date.now()+'-'+added, ref:null,
-          poste:it.poste, option:it.option||'',
-          entreprise:it.entreprise, cfa:it.cfa||'',
-          lieu:it.lieu||'', niveau:it.niveau||'',
-          accessibleBac: !!it.accessibleBac,
-          salaire:it.salaire||'', datePublication:it.datePublication || new Date().toISOString().slice(0,10),
-          echeance:it.echeance||'', debut:it.debut||'',
-          email:it.email||null, telephone:it.telephone||null,
-          lien:it.lien||'#', lienConsultable: it.lienConsultable===false ? false : true,
-          secteur:it.secteur||'', cycle: /2027/.test((it.datePublication||'')+(it.echeance||'')+(it.debut||'')) ? '2027' : '2026',
-          missions:it.missions||'',
-          niveauCible: it.niveauCible||'BTS',
-          scanMode: mode,
-          isNew: true, addedAt: Date.now()
-        });
-        added++;
-      });
+          found.forEach(it=>{
+            if(!it || !it.poste || !it.entreprise) return;
+            if(OFF_TOPIC_POSTE_RX.test(it.poste)) return; // hors-profil (commercial/vente) — filtré même si le modèle l'a quand même renvoyé
+            const isDup = allListings().some(x =>
+              (x.lien && it.lien && x.lien===it.lien) ||
+              (String(x.poste||'').toLowerCase()===String(it.poste).toLowerCase() && String(x.entreprise||'').toLowerCase()===String(it.entreprise).toLowerCase())
+            );
+            if(isDup) return;
+            customListings.push({
+              id:'scan-'+Date.now()+'-'+totalAdded, ref:null,
+              poste:it.poste, option:it.option||'',
+              entreprise:it.entreprise, cfa:it.cfa||'',
+              lieu:it.lieu||'', niveau:it.niveau||'',
+              accessibleBac: !!it.accessibleBac,
+              salaire:it.salaire||'', datePublication:it.datePublication || new Date().toISOString().slice(0,10),
+              echeance:it.echeance||'', debut:it.debut||'',
+              email:it.email||null, telephone:it.telephone||null,
+              lien:it.lien||'#', lienConsultable: it.lienConsultable===false ? false : true,
+              secteur:it.secteur||'', cycle: /2027/.test((it.datePublication||'')+(it.echeance||'')+(it.debut||'')) ? '2027' : '2026',
+              missions:it.missions||'',
+              niveauCible: it.niveauCible||'BTS',
+              scanMode: mode,
+              isNew: true, addedAt: Date.now()
+            });
+            totalAdded++;
+          });
+
+          // Détection nouveaux CFA / employeurs (scan élargi uniquement) — accumulée sur tous les groupes.
+          if(mode === 'wide'){
+            const knownListingEmps = allListings().map(i=>(i.entreprise||'').toLowerCase());
+            found.forEach(it=>{
+              if(!it) return;
+              const cfaNom = (it.cfa||'').trim();
+              const empNom = (it.entreprise||'').trim();
+              if(cfaNom && !knownCfaNames.some(n=>cfaNom.toLowerCase().includes(n) || n.includes(cfaNom.toLowerCase()))){
+                if(!allNewCfas.find(x=>x.nom===cfaNom))
+                  allNewCfas.push({ nom:cfaNom, lien:it.lien||'#', note:`Repéré via scan élargi le ${new Date().toLocaleDateString('fr-FR')} — à valider.`, lat:null, lng:null });
+              }
+              if(empNom && !cfaNom && !knownEmpNames.some(n=>empNom.toLowerCase().includes(n) || n.includes(empNom.toLowerCase())) && !knownListingEmps.some(n=>empNom.toLowerCase()===n)){
+                if(!allNewEmps.find(x=>x.nom===empNom))
+                  allNewEmps.push({ nom:empNom, lien:it.lien||'#', note:`Repéré via scan élargi le ${new Date().toLocaleDateString('fr-FR')} — à valider.` });
+              }
+            });
+          }
+
+          if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
+            applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
+            rateLimited = true;
+            break; // quota déjà à 0 : inutile d'insister sur les groupes suivants
+          }
+        }catch(err){
+          failedGroups++;
+          lastError = err;
+          if(err && err.message==='RATE_LIMIT'){ rateLimited = true; break; }
+          // sinon (413, réseau...) : les groupes suivants sont plus petits et pas forcément touchés par
+          // la même limite, donc on continue au lieu d'abandonner tout le scan.
+        }
+        scheduleSave();
+      }
 
       lastScanDate = new Date().toLocaleDateString('fr-FR');
       scheduleSave();
       renderAll();
       updateScanHead();
 
-      // Scroll vers la première nouvelle annonce
-      if(added > 0){
+      if(totalAdded > 0){
         setTimeout(()=>{
           const newCard = document.querySelector('.card.card-new');
           if(newCard) newCard.scrollIntoView({ behavior:'smooth', block:'center' });
         }, 150);
       }
-
-      // Détection nouveaux CFA / employeurs (scan élargi uniquement)
-      if(mode === 'wide' && found.length > 0){
-        const knownCfaNames = [...CFA_NETWORKS, ...customCfa].map(c=>(c.nom||'').toLowerCase());
-        const knownEmpNames = customEmployeurs.map(e=>(e.nom||'').toLowerCase());
-        const knownListingEmps = allListings().map(i=>(i.entreprise||'').toLowerCase());
-
-        const newCfas = [];
-        const newEmps = [];
-
-        found.forEach(it=>{
-          if(!it) return;
-          const cfaNom = (it.cfa||'').trim();
-          const empNom = (it.entreprise||'').trim();
-
-          if(cfaNom && !knownCfaNames.some(n=>cfaNom.toLowerCase().includes(n) || n.includes(cfaNom.toLowerCase()))){
-            if(!newCfas.find(x=>x.nom===cfaNom))
-              newCfas.push({ nom:cfaNom, lien:it.lien||'#', note:`Repéré via scan élargi le ${new Date().toLocaleDateString('fr-FR')} — à valider.`, lat:null, lng:null });
-          }
-          if(empNom && !cfaNom && !knownEmpNames.some(n=>empNom.toLowerCase().includes(n) || n.includes(empNom.toLowerCase())) && !knownListingEmps.some(n=>empNom.toLowerCase()===n)){
-            if(!newEmps.find(x=>x.nom===empNom))
-              newEmps.push({ nom:empNom, lien:it.lien||'#', note:`Repéré via scan élargi le ${new Date().toLocaleDateString('fr-FR')} — à valider.` });
-          }
-        });
-
-        if(newCfas.length > 0 || newEmps.length > 0){
-          showNewPartnerModal(newCfas, newEmps);
-        }
+      if(allNewCfas.length > 0 || allNewEmps.length > 0){
+        showNewPartnerModal(allNewCfas, allNewEmps);
       }
 
-      statusEl.className = 'scan-status ok';
-      statusEl.textContent = added>0
-        ? `✅ ${added} nouvelle${added>1?'s':''} annonce${added>1?'s':''} trouvée${added>1?'s':''} et ajoutée${added>1?'s':''} au dossier.`
-        : '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier, ou la recherche a pris trop de temps : réessaie si besoin).';
+      const succeededGroups = groups.length - failedGroups;
+      if(totalAdded > 0){
+        statusEl.className = 'scan-status ok';
+        statusEl.textContent = `✅ ${totalAdded} nouvelle${totalAdded>1?'s':''} annonce${totalAdded>1?'s':''} trouvée${totalAdded>1?'s':''} et ajoutée${totalAdded>1?'s':''} au dossier`
+          + (failedGroups>0 ? ` (${succeededGroups}/${groups.length} recherches ont abouti — les autres ont échoué, réessaie plus tard pour compléter).` : '.');
+      }else if(failedGroups === groups.length){
+        handleGroqError(lastError, statusEl, (mode==='wide'?'scan large':'scan ciblé') + ` — ${groups.length} recherches, toutes en échec`);
+      }else if(failedGroups > 0){
+        statusEl.className = 'scan-status err';
+        statusEl.textContent = `⚠️ Scan partiel : ${succeededGroups}/${groups.length} recherches ont abouti (aucune nouvelle annonce dessus) ${rateLimited ? '— limite Groq atteinte en cours de route.' : '— les autres ont échoué, réessaie plus tard.'}`;
+      }else{
+        statusEl.className = 'scan-status ok';
+        statusEl.textContent = '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier, ou la recherche a pris trop de temps : réessaie si besoin).';
+      }
 
-      // Cooldown proactif si Groq indique un quota déjà à 0 (évite un 429 inutile au prochain clic).
       if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
         applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
       }
-    }catch(err){
-      handleGroqError(err, statusEl, mode==='wide' ? 'scan large' : 'scan ciblé');
     }finally{
       btn.textContent = originalLabel;
       tickScanCooldown(); // réactive les boutons seulement si aucun cooldown n'est actif
