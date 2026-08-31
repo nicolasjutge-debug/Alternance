@@ -1015,7 +1015,16 @@
   // Message JSONBin spécifique à la limite de taille du palier gratuit (100 Ko/bin) — distinct d'un
   // vrai souci de clé/bin, donc traité différemment : on allège la charge, on ne signale pas une
   // erreur de configuration à corriger.
-  function isJsonBinSizeLimitMessage(message){
+  // Prend aussi le code HTTP en compte (pas seulement le texte du message) : un vrai 413 est TOUJOURS
+  // un dépassement de taille par définition ("Payload Too Large"), mais son corps n'est pas forcément
+  // du JSON exploitable — souvent renvoyé par un intermédiaire réseau devant l'API JSONBin plutôt que
+  // par JSONBin elle-même, qui documente ses propres dépassements en 400 avec un message précis. Sans
+  // ce repli sur le statut, un 413 avec message illisible (message=null) n'était jamais reconnu comme
+  // un dépassement de taille : toute la logique d'allègement de la corbeille était ignorée et l'échec
+  // remontait tel quel à chaque synchro, sans jamais réessayer en réduisant la charge — d'où le "413
+  // toujours présent" malgré le message dédié déjà en place pour le cas 400.
+  function isJsonBinSizeLimitMessage(message, status){
+    if(status === 413) return true;
     return !!message && /cannot update a record over|over\s*100\s*k[ob]/i.test(message);
   }
 
@@ -1023,7 +1032,12 @@
     const wire = await compressPayload(payload);
     const r = await fetch(`${JSONBIN}/${binId}`, {
       method:'PUT', signal: AbortSignal.timeout(8000),
-      headers:{ 'Content-Type':'application/json', 'X-Master-Key': apiKey },
+      // X-Bin-Versioning:true est OBLIGATOIRE pour que JSONBin conserve un historique — sans lui
+      // (valeur par défaut de l'API : false), CHAQUE mise à jour écrase silencieusement la précédente
+      // et versionCount reste à 0 pour toujours. C'était la cause du message "Aucun historique de
+      // versions trouvé sur ce bin" : le header n'était jamais envoyé, donc rien n'était jamais archivé
+      // malgré le commentaire de recoverCloudVersionByDate qui supposait le versioning actif par défaut.
+      headers:{ 'Content-Type':'application/json', 'X-Master-Key': apiKey, 'X-Bin-Versioning':'true' },
       body: JSON.stringify(wire)
     });
     if(r.ok) return { ok:true, status:r.status };
@@ -1040,7 +1054,7 @@
       let res = await pushPayloadToJsonBin(syncCfg.binId, syncCfg.apiKey, { ...base, trash });
       if(res.ok){ setSyncStatus('ok', '☁️ Synchronisé'); return true; }
 
-      if(isJsonBinSizeLimitMessage(res.message) && trash.length > 0){
+      if(isJsonBinSizeLimitMessage(res.message, res.status) && trash.length > 0){
         // La corbeille (snapshots complets des annonces supprimées) est ce qu'on peut sacrifier côté
         // CLOUD sans rien perdre côté données actives — elle reste intacte en LOCAL sur cet appareil,
         // juste pas synchronisée telle quelle.
@@ -1048,13 +1062,13 @@
           res = await pushPayloadToJsonBin(syncCfg.binId, syncCfg.apiKey, { ...base, trash: trash.slice(0,5) });
           if(res.ok){ setSyncStatus('ok', `☁️ Synchronisé (corbeille allégée pour le cloud — ${trash.length} entrée${trash.length>1?'s':''} restent en local)`); return true; }
         }
-        if(isJsonBinSizeLimitMessage(res.message)){
+        if(isJsonBinSizeLimitMessage(res.message, res.status)){
           res = await pushPayloadToJsonBin(syncCfg.binId, syncCfg.apiKey, { ...base, trash: [] });
           if(res.ok){ setSyncStatus('ok', `☁️ Synchronisé (corbeille exclue du cloud — trop volumineuse pour le palier gratuit JSONBin ; ${trash.length} entrée${trash.length>1?'s':''} restent en local sur cet appareil)`); return true; }
         }
       }
 
-      if(isJsonBinSizeLimitMessage(res.message)){
+      if(isJsonBinSizeLimitMessage(res.message, res.status)){
         setSyncStatus('err', `⚠️ Même sans la corbeille, le dossier dépasse les 100 Ko du palier gratuit JSONBin. Passe en Pro (jsonbin.io/pricing — jusqu'à 1 Mo), ou allège le dossier (notes/missions plus courtes, vieilles annonces supprimées).`);
       } else if(res.status===403){
         setSyncStatus('err', res.message
@@ -2832,7 +2846,10 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
       async function fetchVersion(v){
         const r = await fetch(`${JSONBIN}/${syncCfg.binId}/${v}`, { headers:{ 'X-Master-Key':syncCfg.apiKey, 'X-Bin-Meta':'false' }, signal: AbortSignal.timeout(8000) });
         if(!r.ok) return null;
-        try{ return await r.json(); }catch(e){ return null; }
+        // Décompression indispensable : cloudPush() pousse les sauvegardes compressées ({_gz:"<base64>"}),
+        // donc une version lue brute n'a pas de champ lastModified exploitable (toujours undefined) et
+        // la recherche par date ci-dessous échouait systématiquement même une fois l'historique activé.
+        try{ return await decompressPayload(await r.json()); }catch(e){ return null; }
       }
 
       // Dernière version dont lastModified <= targetMs (suppose l'ordre chronologique des versions,
