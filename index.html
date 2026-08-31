@@ -507,8 +507,11 @@
     <input type="file" id="importContactsInput" accept=".xlsx,.xls,.csv,text/csv" style="display:none;">
     <button class="btn ghost" id="downloadBackupBtn">💾 Télécharger une sauvegarde</button>
     <button class="btn ghost" id="restoreBackupBtn">📤 Restaurer une sauvegarde</button>
+    <button class="btn ghost" id="mergeBackupBtn">🔀 Fusionner une sauvegarde</button>
     <button class="btn ghost" id="downloadLocalBackupBtn">🗄️ Secours local (avant dernière synchro)</button>
+    <button class="btn ghost" id="recoverCloudBtn">🕒 Récupérer une date (historique cloud)</button>
     <input type="file" id="restoreFileInput" accept="application/json,.json" style="display:none;">
+    <input type="file" id="mergeFileInput" accept="application/json,.json" style="display:none;">
     <button class="btn ghost" id="trashBtn" type="button">🗑️ Corbeille</button>
     <button class="btn ghost" id="resetBtn">↺ Réinitialiser mon suivi (statuts/notes)</button>
   </footer>
@@ -2710,6 +2713,159 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     alert('✅ Sauvegarde restaurée.');
   }
 
+  function triggerMergeBackup(){
+    document.getElementById('mergeFileInput').click();
+  }
+
+  // Contrairement à "Restaurer" (remplace tout), ceci AJOUTE ce qui manque sans rien supprimer ni
+  // écraser — pour le cas où la source (fichier ou version cloud) date d'avant des ajouts faits depuis
+  // sur cet appareil : un simple remplacement perdrait ces ajouts récents. En cas de statut différent
+  // sur une même annonce, le statut actuel (celui de l'appareil) est gardé ; les notes des deux
+  // versions sont combinées si elles diffèrent, pour ne perdre aucune information dans les deux sens.
+  // Logique commune à "Fusionner une sauvegarde" (fichier) et à la récupération d'une version cloud
+  // par date — retourne une phrase résumant ce qui a été récupéré (ou null si rien de nouveau).
+  async function mergeStateData(data){
+    const incoming = data.itemStates || {};
+    let addedStates = 0, mergedNotes = 0;
+    Object.keys(incoming).forEach(id=>{
+      const inc = incoming[id];
+      if(!inc) return;
+      if(!itemStates[id]){
+        itemStates[id] = { status: inc.status || 'repérer', notes: inc.notes || '' };
+        addedStates++;
+      }else{
+        const cur = itemStates[id];
+        const incNotes = (inc.notes||'').trim();
+        const curNotes = (cur.notes||'').trim();
+        if(incNotes && incNotes !== curNotes){
+          cur.notes = curNotes ? `${curNotes}\n[récupéré] ${incNotes}` : incNotes;
+          mergedNotes++;
+        }
+      }
+    });
+
+    function mergeById(currentArr, incomingArr){
+      const ids = new Set(currentArr.filter(x=>x&&x.id).map(x=>x.id));
+      let added = 0;
+      (incomingArr||[]).forEach(x=>{
+        if(x && x.id && !ids.has(x.id)){ currentArr.push(x); ids.add(x.id); added++; }
+      });
+      return added;
+    }
+    const addedListings   = mergeById(customListings,   data.customListings);
+    const addedCfa        = mergeById(customCfa,        data.customCfa);
+    const addedEmployeurs = mergeById(customEmployeurs, data.customEmployeurs);
+
+    (data.hiddenIds||[]).forEach(id=>{ if(id && !hiddenIds.includes(id)) hiddenIds.push(id); });
+
+    // trash a une forme différente ({item:{...}, deletedAt, ...}) : l'id est dans .item.id, pas à la racine.
+    let addedTrash = 0;
+    const trashIds = new Set(trash.filter(t=>t&&t.item&&t.item.id).map(t=>t.item.id));
+    (data.trash||[]).forEach(t=>{
+      const tid = t && t.item && t.item.id;
+      if(tid && !trashIds.has(tid)){ trash.push(t); trashIds.add(tid); addedTrash++; }
+    });
+
+    await persistState(); // sauvegarde locale + push cloud si synchro active
+    renderAll();
+    updateScanHead();
+    updateTrashBadge();
+
+    const addedListingsTotal = addedListings + addedCfa + addedEmployeurs;
+    const parts = [];
+    if(addedStates) parts.push(`${addedStates} statut${addedStates>1?'s':''}/note${addedStates>1?'s':''} récupéré${addedStates>1?'s':''}`);
+    if(mergedNotes) parts.push(`${mergedNotes} note${mergedNotes>1?'s':''} complétée${mergedNotes>1?'s':''}`);
+    if(addedListingsTotal) parts.push(`${addedListingsTotal} annonce${addedListingsTotal>1?'s':''} récupérée${addedListingsTotal>1?'s':''}`);
+    if(addedTrash) parts.push(`${addedTrash} élément${addedTrash>1?'s':''} de corbeille récupéré${addedTrash>1?'s':''}`);
+    return parts.length ? parts.join(', ') : null;
+  }
+
+  async function handleMergeFile(e){
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if(!file) return;
+    let data;
+    try{ data = JSON.parse(await file.text()); }
+    catch(err){ alert("⚠️ Fichier illisible ou corrompu — ce n'est pas un JSON valide."); return; }
+    if(!data || typeof data!=='object' || (!('itemStates' in data) && !('customListings' in data))){
+      alert("⚠️ Ce fichier ne ressemble pas à une sauvegarde de Radar Alternance.");
+      return;
+    }
+    const dateStr = data.exportedAt ? new Date(data.exportedAt).toLocaleString('fr-FR') : 'date inconnue';
+    if(!confirm(`Fusionner la sauvegarde du ${dateStr} avec les données actuelles sur cet appareil ?\n\nRien n'est supprimé ni remplacé : les annonces/statuts absents actuellement sont rajoutés, et si une même annonce a des notes différentes dans les deux versions, elles sont combinées (le statut actuel sur cet appareil est gardé tel quel).`)) return;
+    const summary = await mergeStateData(data);
+    alert(summary ? `✅ Fusion terminée : ${summary}.` : "✅ Fusion terminée : rien de nouveau à ajouter, tout était déjà présent.");
+  }
+
+  // Va chercher dans l'HISTORIQUE DES VERSIONS du bin JSONBin (activé par défaut, jusqu'à 1000
+  // versions conservées) la dernière version datant d'avant une date donnée — utile quand la donnée
+  // voulue n'est plus dans le secours local (celui-ci n'est jamais qu'un instantané "avant-dernière
+  // ouverture", pas un historique par date). Recherche dichotomique : quelques requêtes seulement,
+  // même avec des centaines de versions. Fusionne ensuite avec mergeStateData (rien n'est écrasé).
+  async function recoverCloudVersionByDate(){
+    if(!syncCfg || !syncCfg.apiKey || !syncCfg.binId){
+      alert("La synchro cloud n'est pas configurée sur cet appareil (bouton 🟢 Synchro) — sans elle, impossible d'aller chercher l'historique JSONBin.");
+      return;
+    }
+    const dateStr = prompt("Récupérer le dossier tel qu'il était à la fin de quelle date ? (JJ/MM/AAAA)", "29/08/2026");
+    if(!dateStr) return;
+    const m = dateStr.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(!m){ alert("Format de date non reconnu — utilise JJ/MM/AAAA, ex: 29/08/2026."); return; }
+    const targetMs = new Date(+m[3], +m[2]-1, +m[1], 23, 59, 59, 999).getTime();
+
+    const btn = document.getElementById('recoverCloudBtn');
+    const originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '🔎 Recherche dans l\'historique cloud…';
+
+    try{
+      const countResp = await fetch(`${JSONBIN}/${syncCfg.binId}/versions/count`, { headers:{ 'X-Master-Key':syncCfg.apiKey } });
+      if(!countResp.ok) throw new Error('COUNT_FAILED');
+      const countJson = await countResp.json();
+      const maxVersion = (countJson && countJson.metadata && typeof countJson.metadata.versionCount === 'number')
+        ? countJson.metadata.versionCount - 1 : null;
+      if(maxVersion === null || maxVersion < 0){
+        alert("Aucun historique de versions trouvé sur ce bin (versioning désactivé, ou bin trop récent).");
+        return;
+      }
+
+      async function fetchVersion(v){
+        const r = await fetch(`${JSONBIN}/${syncCfg.binId}/${v}`, { headers:{ 'X-Master-Key':syncCfg.apiKey, 'X-Bin-Meta':'false' }, signal: AbortSignal.timeout(8000) });
+        if(!r.ok) return null;
+        try{ return await r.json(); }catch(e){ return null; }
+      }
+
+      // Dernière version dont lastModified <= targetMs (suppose l'ordre chronologique des versions,
+      // vrai en usage normal — un peu moins fiable en cas d'usage simultané sur 2 appareils).
+      let lo = 0, hi = maxVersion, best = null, bestData = null;
+      while(lo <= hi){
+        const mid = Math.floor((lo+hi)/2);
+        const data = await fetchVersion(mid);
+        const lm = data && typeof data.lastModified === 'number' ? data.lastModified : null;
+        if(lm !== null && lm <= targetMs){ best = mid; bestData = data; lo = mid+1; }
+        else{ hi = mid-1; }
+      }
+
+      if(best === null){
+        alert(`Rien trouvé avant le ${dateStr} — la version la plus ancienne conservée sur le bin est déjà postérieure à cette date.`);
+        return;
+      }
+
+      const foundDate = bestData.lastModified ? new Date(bestData.lastModified).toLocaleString('fr-FR') : 'date inconnue';
+      const nbItems = Object.keys(bestData.itemStates||{}).length;
+      const nbCustom = (bestData.customListings||[]).length + (bestData.customCfa||[]).length + (bestData.customEmployeurs||[]).length;
+      if(!confirm(`Version cloud trouvée : ${foundDate} (version ${best}/${maxVersion}).\n${nbItems} statut(s) enregistré(s), ${nbCustom} annonce(s)/employeur(s) personnalisé(s).\n\nFusionner ceci avec les données actuelles sur cet appareil ? Rien n'est supprimé, seulement complété.`)) return;
+
+      const summary = await mergeStateData(bestData);
+      alert(summary ? `✅ Fusion terminée avec la version du ${foundDate} : ${summary}.` : `✅ Version du ${foundDate} récupérée : rien de nouveau par rapport à ce qui est déjà là.`);
+    }catch(err){
+      alert("⚠️ Échec de la recherche dans l'historique cloud — vérifie ta connexion, ou que le versioning n'a pas été désactivé sur ce bin.");
+    }finally{
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+    }
+  }
+
   /* ============ RESET ============ */
   async function resetTracking(){
     if(!confirm("Réinitialiser tous les statuts et notes ? Les annonces ajoutées manuellement (et celles trouvées par scan, y compris les CFA/employeurs découverts) seront aussi supprimées, les annonces de base supprimées individuellement seront restaurées, et la corbeille sera vidée définitivement. Cette action est irréversible.")) return;
@@ -2775,8 +2931,11 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     document.getElementById('importContactsInput').addEventListener('change', handleImportContactsFile);
     document.getElementById('downloadBackupBtn').addEventListener('click', downloadBackup);
     document.getElementById('restoreBackupBtn').addEventListener('click', triggerRestoreBackup);
+    document.getElementById('mergeBackupBtn').addEventListener('click', triggerMergeBackup);
     document.getElementById('downloadLocalBackupBtn').addEventListener('click', downloadLocalBackupSnapshot);
+    document.getElementById('recoverCloudBtn').addEventListener('click', recoverCloudVersionByDate);
     document.getElementById('restoreFileInput').addEventListener('change', handleRestoreFile);
+    document.getElementById('mergeFileInput').addEventListener('change', handleMergeFile);
     document.getElementById('resetBtn').addEventListener('click', resetTracking);
 
     document.getElementById('configKeyBtn').addEventListener('click', openKeyModal);
