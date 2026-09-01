@@ -2017,7 +2017,15 @@
   let scanCooldownUntil = 0; // timestamp ms ; 0 = pas de cooldown actif
   let scanCooldownScope = null; // 'day' | 'minute' | null (origine inconnue) — pour le libellé affiché
   let scanCooldownTimer = null;
-  let consecutiveRateLimitHits = 0; // remis à 0 dès qu'un appel Groq réussit ; sert au repli progressif
+  // consecutiveRateLimitHits sert au repli progressif (1min → 3min → 8min → 20min) quand Groq ne donne
+  // aucun délai exploitable. AVANT le 30/08/2026 il se remettait à 0 dès qu'UN appel Groq réussissait —
+  // correct pour un scan à 1 seul appel, mais avec le scan découpé en 3 groupes, un 1er groupe qui passe
+  // remet le compteur à 0 juste avant que le 2e/3e retombe sur la même limite : le délai recalculé
+  // repart alors toujours au palier le plus bas (1min), qui ne suffit jamais si le vrai quota met plus
+  // longtemps à se libérer — d'où l'impression de « boucle bloquée à 1min ». Le reset se base maintenant
+  // sur le temps écoulé depuis le dernier 429, pas sur la réussite d'un appel individuel.
+  let consecutiveRateLimitHits = 0;
+  let lastRateLimitHitAt = 0;
 
   function applyScanCooldown(ms, scope){
     if(!ms || ms<=0) return;
@@ -2059,7 +2067,12 @@
   // entre les 3 recherches, donc le cooldown doit démarrer immédiatement dans les deux cas, pas
   // seulement quand handleGroqError est appelé pour un échec total.
   function applyRateLimitCooldown(err){
+    const now = Date.now();
+    // Plus de 5 min depuis le dernier 429 : on considère que c'est un nouvel incident, pas la suite du
+    // précédent — repart du palier le plus bas. En dessous de 5 min : ça continue d'escalader.
+    if(now - lastRateLimitHitAt > 5*60*1000) consecutiveRateLimitHits = 0;
     consecutiveRateLimitHits++;
+    lastRateLimitHitAt = now;
     const detail = err && err.detail;
     let waitMs = (detail && detail.waitMs) || lastGroqRateInfo.retryAfterMs || lastGroqRateInfo.resetRequestsMs;
     const scope = (detail && detail.scope) || null;
@@ -2170,7 +2183,7 @@
         btn.textContent = (mode === 'wide' ? '🌐 ' : '🔎 ') + `Recherche ${gi+1}/${groups.length} (${g.label})…`;
         try{
           const text = await callGroqWithSearch(g.body + foot, statusEl);
-          consecutiveRateLimitHits = 0; // reset : cet appel a réussi
+          // (le reset de consecutiveRateLimitHits ne se fait plus ici — voir sa déclaration plus haut)
           const found = extractJsonArray(text);
 
           found.forEach(it=>{
@@ -2366,7 +2379,7 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
         }
       }
       batch = sub; // le reste de la fonction traite le lot effectivement interrogé (réduit ou non)
-      consecutiveRateLimitHits = 0; // reset : cet appel a réussi
+      // (le reset de consecutiveRateLimitHits ne se fait plus ici — voir sa déclaration plus haut)
       const results = extractJsonArray(text);
 
       let nowUnavailable = 0;
