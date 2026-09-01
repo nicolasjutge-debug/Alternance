@@ -1949,7 +1949,21 @@
     };
 
     if(response.status===401 || response.status===403) throw new Error('BAD_KEY');
-    if(response.status===413) throw new Error('PAYLOAD_TOO_LARGE');
+    if(response.status===413){
+      // On lit enfin ce que Groq répond réellement, au lieu de le jeter comme avant — jusqu'ici on
+      // devinait la cause à l'aveugle (nom de modèle, portée de la requête, instruction de vérification
+      // de lien...) sans jamais voir le message d'erreur effectif. Même logique que jsonbinErrorMessage
+      // ci-dessus, qui avait permis de trouver la vraie cause côté JSONBin (versioning indisponible).
+      let detail = null;
+      try{
+        const body = await response.json();
+        detail = (body && body.error && body.error.message) ? String(body.error.message)
+                : (body && body.message ? String(body.message) : null);
+      }catch(e){ /* corps illisible ou vide — pas de détail disponible cette fois */ }
+      const err = new Error('PAYLOAD_TOO_LARGE');
+      err.detail = detail;
+      throw err;
+    }
     if(response.status===429){
       // Le corps JSON reste lisible même quand les en-têtes de quota sont masqués par CORS, et
       // contient le VRAI délai + la limite précise touchée (jour ou minute) — bien plus fiable
@@ -2004,13 +2018,6 @@
   let scanCooldownScope = null; // 'day' | 'minute' | null (origine inconnue) — pour le libellé affiché
   let scanCooldownTimer = null;
   let consecutiveRateLimitHits = 0; // remis à 0 dès qu'un appel Groq réussit ; sert au repli progressif
-
-  // Reprise de scan interrompu : quand un scan s'arrête en cours de route à cause de la limite Groq,
-  // on retient quelles recherches (par label, stable) restent à faire pour CE mode ('targeted'/'wide').
-  // Au prochain clic sur le même bouton, on ne relance que celles-là au lieu de repartir de la
-  // première — qui, elle, a déjà consommé un appel pour rien la fois précédente. Volontairement en
-  // mémoire seulement (comme scanCooldownUntil) : repart de zéro si la page est rechargée.
-  let pendingScanGroups = { targeted:null, wide:null };
 
   function applyScanCooldown(ms, scope){
     if(!ms || ms<=0) return;
@@ -2070,7 +2077,7 @@
     return { waitMs, scope, estimated };
   }
 
-  function handleGroqError(err, statusEl, context, precomputedCooldown){
+  function handleGroqError(err, statusEl, context){
     console.error('Appel Groq impossible', err, context||'');
     statusEl.className = 'scan-status err';
     const ctxTxt = context ? ` [${context}]` : '';
@@ -2078,12 +2085,10 @@
       statusEl.textContent = "⚠️ Clé API Groq refusée — vérifie qu'elle est correcte (ou régénère-la sur console.groq.com/keys), puis réessaie.";
       openKeyModal();
     }else if(err && err.message==='PAYLOAD_TOO_LARGE'){
-      statusEl.textContent = `⚠️ Requête trop volumineuse pour Groq (413)${ctxTxt}. Réessaie avec moins d'annonces à la fois.`;
+      const detailTxt = err.detail ? ` — Groq dit : "${err.detail}"` : ' (Groq n\'a donné aucun détail cette fois)';
+      statusEl.textContent = `⚠️ Requête trop volumineuse pour Groq (413)${ctxTxt}${detailTxt}.`;
     }else if(err && err.message==='RATE_LIMIT'){
-      // precomputedCooldown : passé par scanLive quand le cooldown a déjà été démarré pendant la boucle
-      // (dès qu'UN groupe est rate-limited) — évite de rappeler applyRateLimitCooldown une 2e fois pour
-      // la même erreur, ce qui fausserait consecutiveRateLimitHits et le repli progressif.
-      const { waitMs, scope, estimated } = precomputedCooldown || applyRateLimitCooldown(err);
+      const { waitMs, scope, estimated } = applyRateLimitCooldown(err);
       const waitTxt = fmtDurationFr(waitMs);
       const scopeLabel = scope==='day'
         ? ' (quota JOURNALIER Groq atteint — ne repart pas avant plusieurs heures)'
@@ -2151,18 +2156,10 @@
       { label:'Bachelor/Licence Pro', body:`Recherche web libre : ${COMMON_HEAD} Niveaux : Bachelor, Licence Pro cybersécurité/informatique (Bac+3). Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier.` },
       { label:'Master cybersécurité', body:`Recherche web libre : ${COMMON_HEAD} Niveau : Master cybersécurité (Bac+5). Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier.` }
     ];
-    const fullGroups = mode === 'wide' ? wideGroups : targetedGroups;
+    const groups = mode === 'wide' ? wideGroups : targetedGroups;
     const foot = mode === 'wide' ? FOOT_WIDE : FOOT_TARGETED;
 
-    // Reprise : si un scan précédent sur ce même mode s'est arrêté en cours de route (limite Groq),
-    // on ne relance que les recherches restantes (garde-fou : si les labels ne correspondent plus à
-    // rien — cas normalement impossible en session normale — on repart de la liste complète plutôt
-    // que de ne rien tenter).
-    let groups = pendingScanGroups[mode] ? fullGroups.filter(g => pendingScanGroups[mode].includes(g.label)) : fullGroups;
-    if(groups.length === 0) groups = fullGroups;
-    const alreadyDoneCount = fullGroups.length - groups.length;
-
-    let totalAdded = 0, succeededCount = 0, failedGroups = 0, lastError = null, rateLimited = false, rateLimitCooldownInfo = null;
+    let totalAdded = 0, failedGroups = 0, lastError = null, rateLimited = false;
     const allNewCfas = [], allNewEmps = [];
     const knownCfaNames = [...CFA_NETWORKS, ...customCfa].map(c=>(c.nom||'').toLowerCase());
     const knownEmpNames = customEmployeurs.map(e=>(e.nom||'').toLowerCase());
@@ -2170,12 +2167,10 @@
     try{
       for(let gi=0; gi<groups.length; gi++){
         const g = groups[gi];
-        const displayPos = fullGroups.indexOf(g) + 1; // position réelle dans le cycle de scan (même en reprise partielle), pour un affichage cohérent avec le message final
-        btn.textContent = (mode === 'wide' ? '🌐 ' : '🔎 ') + `Recherche ${displayPos}/${fullGroups.length} (${g.label})…`;
+        btn.textContent = (mode === 'wide' ? '🌐 ' : '🔎 ') + `Recherche ${gi+1}/${groups.length} (${g.label})…`;
         try{
           const text = await callGroqWithSearch(g.body + foot, statusEl);
           consecutiveRateLimitHits = 0; // reset : cet appel a réussi
-          succeededCount++;
           const found = extractJsonArray(text);
 
           found.forEach(it=>{
@@ -2224,8 +2219,6 @@
           }
 
           if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
-            const remaining = groups.slice(gi+1).map(x=>x.label);
-            pendingScanGroups[mode] = remaining.length ? remaining : null; // ce groupe-ci a abouti, on ne le refera pas
             applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
             rateLimited = true;
             break; // quota déjà à 0 : inutile d'insister sur les groupes suivants
@@ -2234,8 +2227,7 @@
           failedGroups++;
           lastError = err;
           if(err && err.message==='RATE_LIMIT'){
-            pendingScanGroups[mode] = groups.slice(gi).map(x=>x.label); // ce groupe-ci n'a PAS abouti, on le refera en premier la prochaine fois
-            rateLimitCooldownInfo = applyRateLimitCooldown(err); // démarre le cooldown/compte à rebours tout de suite (capturé pour éviter un 2e calcul si handleGroqError est aussi appelé en fin de scan)
+            applyRateLimitCooldown(err); // démarre le cooldown/compte à rebours tout de suite, même si d'autres groupes ont déjà réussi
             rateLimited = true;
             break;
           }
@@ -2244,7 +2236,6 @@
         }
         scheduleSave();
       }
-      if(!rateLimited) pendingScanGroups[mode] = null; // scan allé au bout de la liste (avec ou sans échecs hors-quota) : on repart de zéro la prochaine fois
 
       lastScanDate = new Date().toLocaleDateString('fr-FR');
       scheduleSave();
@@ -2261,22 +2252,16 @@
         showNewPartnerModal(allNewCfas, allNewEmps);
       }
 
-      // Compté explicitement (succeededCount++ au moment du succès) plutôt que par soustraction :
-      // l'ancien calcul (groups.length - failedGroups) comptait à tort les recherches jamais tentées
-      // (parce que le scan s'était arrêté avant de les atteindre) comme si elles avaient abouti.
-      // Cumulé sur le cycle complet (fullGroups) : en reprise, les recherches déjà abouties lors d'un
-      // tour précédent comptent aussi, et le dénominateur reste le vrai total du scan (3) au lieu de
-      // redevenir 2 puis 1 au fil des reprises.
-      const succeededGroups = alreadyDoneCount + succeededCount;
+      const succeededGroups = groups.length - failedGroups;
       if(totalAdded > 0){
         statusEl.className = 'scan-status ok';
         statusEl.textContent = `✅ ${totalAdded} nouvelle${totalAdded>1?'s':''} annonce${totalAdded>1?'s':''} trouvée${totalAdded>1?'s':''} et ajoutée${totalAdded>1?'s':''} au dossier`
-          + (succeededGroups<fullGroups.length ? ` (${succeededGroups}/${fullGroups.length} recherches ont abouti — les autres ont échoué, réessaie plus tard pour compléter).` : '.');
-      }else if(succeededGroups === 0){
-        handleGroqError(lastError, statusEl, (mode==='wide'?'scan large':'scan ciblé') + ` — ${fullGroups.length} recherches, toutes en échec`, rateLimitCooldownInfo);
-      }else if(succeededGroups < fullGroups.length){
+          + (failedGroups>0 ? ` (${succeededGroups}/${groups.length} recherches ont abouti — les autres ont échoué, réessaie plus tard pour compléter).` : '.');
+      }else if(failedGroups === groups.length){
+        handleGroqError(lastError, statusEl, (mode==='wide'?'scan large':'scan ciblé') + ` — ${groups.length} recherches, toutes en échec`);
+      }else if(failedGroups > 0){
         statusEl.className = 'scan-status err';
-        statusEl.textContent = `⚠️ Scan partiel : ${succeededGroups}/${fullGroups.length} recherches ont abouti (aucune nouvelle annonce dessus) ${rateLimited ? '— limite Groq atteinte en cours de route.' : '— les autres ont échoué, réessaie plus tard.'}`;
+        statusEl.textContent = `⚠️ Scan partiel : ${succeededGroups}/${groups.length} recherches ont abouti (aucune nouvelle annonce dessus) ${rateLimited ? '— limite Groq atteinte en cours de route.' : '— les autres ont échoué, réessaie plus tard.'}`;
       }else{
         statusEl.className = 'scan-status ok';
         statusEl.textContent = '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier, ou la recherche a pris trop de temps : réessaie si besoin).';
