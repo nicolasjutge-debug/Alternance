@@ -2039,6 +2039,30 @@
   // Pour RATE_LIMIT : utilise en priorité le vrai délai extrait du message Groq (err.detail) ; à
   // défaut, un repli qui s'allonge à chaque échec consécutif (60s→3min→8min→20min) au lieu d'un
   // 60s fixe systématiquement faux quand la vraie limite touchée est journalière (RPD).
+  // Calcule le délai d'attente réel (ou une estimation) et démarre le cooldown/compte à rebours.
+  // Extrait de handleGroqError pour être appelable aussi depuis scanLive dès qu'UN groupe est
+  // rate-limited — même si d'autres groupes ont réussi (échec partiel) : le quota Groq est partagé
+  // entre les 3 recherches, donc le cooldown doit démarrer immédiatement dans les deux cas, pas
+  // seulement quand handleGroqError est appelé pour un échec total.
+  function applyRateLimitCooldown(err){
+    consecutiveRateLimitHits++;
+    const detail = err && err.detail;
+    let waitMs = (detail && detail.waitMs) || lastGroqRateInfo.retryAfterMs || lastGroqRateInfo.resetRequestsMs;
+    const scope = (detail && detail.scope) || null;
+    let estimated = false;
+    if(!waitMs){
+      estimated = true;
+      if(scope==='day'){
+        waitMs = msUntilNextUtcMidnight();
+      }else{
+        const fallbackSteps = [60000, 180000, 480000, 1200000]; // 1min, 3min, 8min, 20min
+        waitMs = fallbackSteps[Math.min(consecutiveRateLimitHits-1, fallbackSteps.length-1)];
+      }
+    }
+    applyScanCooldown(waitMs, scope);
+    return { waitMs, scope, estimated };
+  }
+
   function handleGroqError(err, statusEl, context){
     console.error('Appel Groq impossible', err, context||'');
     statusEl.className = 'scan-status err';
@@ -2049,21 +2073,7 @@
     }else if(err && err.message==='PAYLOAD_TOO_LARGE'){
       statusEl.textContent = `⚠️ Requête trop volumineuse pour Groq (413)${ctxTxt}. Réessaie avec moins d'annonces à la fois.`;
     }else if(err && err.message==='RATE_LIMIT'){
-      consecutiveRateLimitHits++;
-      const detail = err.detail;
-      let waitMs = (detail && detail.waitMs) || lastGroqRateInfo.retryAfterMs || lastGroqRateInfo.resetRequestsMs;
-      const scope = (detail && detail.scope) || null;
-      let estimated = false;
-      if(!waitMs){
-        estimated = true;
-        if(scope==='day'){
-          waitMs = msUntilNextUtcMidnight();
-        }else{
-          const fallbackSteps = [60000, 180000, 480000, 1200000]; // 1min, 3min, 8min, 20min
-          waitMs = fallbackSteps[Math.min(consecutiveRateLimitHits-1, fallbackSteps.length-1)];
-        }
-      }
-      applyScanCooldown(waitMs, scope);
+      const { waitMs, scope, estimated } = applyRateLimitCooldown(err);
       const waitTxt = fmtDurationFr(waitMs);
       const scopeLabel = scope==='day'
         ? ' (quota JOURNALIER Groq atteint — ne repart pas avant plusieurs heures)'
@@ -2104,9 +2114,15 @@
     statusEl.textContent = '';
 
     const knownShort = allListings().slice(0,10).map(i=>`${i.entreprise}|${i.poste}`).join('\n');
-    const COMMON_HEAD = `alternance à Rennes (35) ou -1h, rentrée 2027. Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels (administration systèmes/réseaux, support, exploitation, sécurité). Avant de renvoyer une offre, vérifie si son lien ouvre une page consultable et à jour. Si le lien est mort, expiré, ou renvoie une page d'erreur/vide MAIS qu'un email ou un téléphone de contact est trouvable pour cette offre ou cet employeur, inclus-la quand même avec lienConsultable:false (garde le lien tel quel s'il existe, sinon '#') — n'exclus une offre que si elle n'a NI lien consultable NI email NI téléphone.`;
-    const FOOT_TARGETED = `\n\nDéjà au dossier :\n${knownShort}\n\nJSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, lienConsultable, secteur, missions. Max 2 nouvelles. Si rien : [].`;
-    const FOOT_WIDE = `\n\nDéjà au dossier :\n${knownShort}\n\nJSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, lienConsultable, secteur, missions, niveauCible (BTS/Bachelor/Licence Pro/Master). Max 2 nouvelles. Si rien : [].`;
+    // La vérification de lien ("le modèle ouvre chaque page trouvée pour checker qu'elle est encore
+    // valide") a été retirée d'ICI le 30/08/2026 : rétrécir le nombre de sources par requête n'a pas
+    // suffi à éliminer le 413 (confirmé sur un groupe à 4 sources), alors que c'est un point commun à
+    // TOUTES les requêtes Groq de l'appli, y compris la vérification (qui ne liste aucune source). La
+    // vérification de lien EXISTE DÉJÀ comme fonctionnalité séparée ("Vérifier annonces enregistrées") :
+    // le scan n'a plus qu'à trouver et lister, pas en plus visiter chaque page trouvée pour la checker.
+    const COMMON_HEAD = `alternance à Rennes (35) ou -1h, rentrée 2027. Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels (administration systèmes/réseaux, support, exploitation, sécurité). Ne visite pas les liens trouvés pour les vérifier — liste-les tels quels, la validité sera vérifiée séparément ensuite.`;
+    const FOOT_TARGETED = `\n\nDéjà au dossier :\n${knownShort}\n\nJSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, secteur, missions. Max 2 nouvelles. Si rien : [].`;
+    const FOOT_WIDE = `\n\nDéjà au dossier :\n${knownShort}\n\nJSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, secteur, missions, niveauCible (BTS/Bachelor/Licence Pro/Master). Max 2 nouvelles. Si rien : [].`;
 
     // Découpé en plusieurs petites requêtes séquentielles au lieu d'une seule englobant tout : Groq
     // limite compound-mini à UN appel d'outil de recherche par requête, et demander de fouiller 14
@@ -2195,7 +2211,11 @@
         }catch(err){
           failedGroups++;
           lastError = err;
-          if(err && err.message==='RATE_LIMIT'){ rateLimited = true; break; }
+          if(err && err.message==='RATE_LIMIT'){
+            applyRateLimitCooldown(err); // démarre le cooldown/compte à rebours tout de suite, même si d'autres groupes ont déjà réussi
+            rateLimited = true;
+            break;
+          }
           // sinon (413, réseau...) : les groupes suivants sont plus petits et pas forcément touchés par
           // la même limite, donc on continue au lieu d'abandonner tout le scan.
         }
