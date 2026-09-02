@@ -1970,16 +1970,30 @@
     return (msg && msg.content) ? msg.content : '';
   }
 
-  // Enveloppe callGroqOnce avec des ré-essais automatiques, mais SEULEMENT pour les coupures réseau
-  // transitoires (TypeError du fetch : Wi-Fi qui lâche une seconde, bascule Wi-Fi/4G, requête bloquée
-  // puis débloquée par une extension...). Une clé refusée, un 429 ou un 413 resteraient en échec au
-  // 2e essai comme au 1er — inutile d'insister dans ces cas-là, l'erreur remonte immédiatement.
+  // Enveloppe callGroqOnce avec des ré-essais automatiques.
+  // — Coupures réseau transitoires (TypeError) : jusqu'à 2 nouveaux essais, comme avant.
+  // — 413 (PAYLOAD_TOO_LARGE) : UN nouvel essai, ajouté le 02/09/2026. L'hypothèse de départ ("un 413
+  //   resterait en échec au 2e essai comme au 1er") s'est révélée fausse : même un lot à 2 sources,
+  //   confirmé fiable une fois, a fini par échouer aussi. La taille dépend surtout de ce que le modèle
+  //   récupère sur le moment en interne (contenu web variable d'un appel à l'autre), pas seulement de
+  //   notre prompt — donc pas forcément reproductible à l'identique, et un 2e essai a une vraie chance
+  //   de tomber sur un contenu plus léger. Une clé refusée ou un 429 restent, eux, sans nouvel essai.
   async function callGroqWithSearch(prompt, statusEl){
     const maxAttempts = 3;
+    let payloadRetried = false;
     for(let attempt=1; attempt<=maxAttempts; attempt++){
       try{
         return await callGroqOnce(prompt);
       }catch(e){
+        if(e && e.message==='PAYLOAD_TOO_LARGE' && !payloadRetried){
+          payloadRetried = true;
+          if(statusEl){
+            statusEl.className = 'scan-status';
+            statusEl.textContent = "🔄 Requête trop volumineuse — nouvel essai (le contenu récupéré par Groq varie d'une fois à l'autre)…";
+          }
+          await new Promise(r=>setTimeout(r, 1200));
+          continue;
+        }
         if(!(e instanceof TypeError) || attempt===maxAttempts) throw e;
         if(statusEl){
           statusEl.className = 'scan-status';
@@ -2086,7 +2100,7 @@
       const { waitMs, scope, estimated } = precomputedCooldown || applyRateLimitCooldown(err);
       const waitTxt = fmtDurationFr(waitMs);
       const scopeLabel = scope==='day'
-        ? ' (quota JOURNALIER Groq atteint — ne repart pas avant plusieurs heures)'
+        ? ' (quota JOURNALIER Groq atteint)'
         : (scope==='minute' ? ' (limite par minute)' : '');
       statusEl.textContent = `⚠️ Limite de requêtes Groq atteinte${scopeLabel} — prochain essai possible dans ${estimated?'environ ':''}${waitTxt}${estimated?' (estimation)':''} (compte à rebours sous les boutons).`;
     }else if(err instanceof TypeError){
@@ -2254,6 +2268,11 @@
               }
             });
           }
+
+          // Affichage progressif : dès que ce groupe a trouvé quelque chose, ça apparaît à l'écran tout
+          // de suite (les données étaient déjà sauvegardées groupe par groupe via scheduleSave() plus
+          // bas, mais l'écran, lui, n'était rafraîchi qu'à la toute fin du scan complet).
+          if(totalAdded > 0){ renderAll(); updateScanHead(); }
 
           if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
             const remaining = groups.slice(gi+1).map(x=>x.label);
