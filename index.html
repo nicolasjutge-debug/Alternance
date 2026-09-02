@@ -2163,10 +2163,19 @@
       { label:'Employeurs (SNCF/ACCEIS)',     body:`Offres ${HD} ${BAC} Sources : SNCF, ACCEIS Rennes.` },
       { label:'Employeurs (Nomios/Axido)',    body:`Offres ${HD} ${BAC} Sources : Nomios, Axido.` },
     ];
+    // Scan large aligné le 02/09/2026 sur le même principe que le ciblé (confirmé fonctionnel à
+    // 2 sources/appel, alors que 3 groupes plus larges par niveau échouaient encore en 413) : au lieu
+    // d'une recherche complètement libre par niveau, chaque niveau est maintenant scindé en 2 appels
+    // nommant chacun 2 sites généralistes concrets — l'esprit "découverte de CFA/employeurs inconnus"
+    // est gardé via la consigne explicite, mais la recherche elle-même a une cible technique aussi
+    // étroite que le ciblé.
     const wideGroups = [
-      { label:'BTS SIO SISR (libre)',         body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Tous CFA et employeurs.` },
-      { label:'Bachelor/Licence Pro cyber',   body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Tous CFA et employeurs.` },
-      { label:'Master cybersécurité (libre)', body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Tous CFA et employeurs.` },
+      { label:'BTS/Technicien (Indeed/LinkedIn)',              body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
+      { label:'BTS/Technicien (France Travail/Studyrama)',     body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Sources : France Travail, Studyrama. Priorise CFA/employeurs inconnus du dossier.` },
+      { label:'Bachelor/Licence Pro (Indeed/LinkedIn)',        body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
+      { label:'Bachelor/Licence Pro (France Travail/Diplomeo)',body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Sources : France Travail, Diplomeo. Priorise CFA/employeurs inconnus du dossier.` },
+      { label:'Master cyber (Indeed/LinkedIn)',                body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
+      { label:'Master cyber (France Travail/Diplomeo)',        body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Sources : France Travail, Diplomeo. Priorise CFA/employeurs inconnus du dossier.` },
     ];
     const fullGroups = mode === 'wide' ? wideGroups : targetedGroups;
     // foot calculé dynamiquement avant chaque appel (cf. buildFoot + sessionFoundListings)
