@@ -1949,21 +1949,7 @@
     };
 
     if(response.status===401 || response.status===403) throw new Error('BAD_KEY');
-    if(response.status===413){
-      // On lit enfin ce que Groq répond réellement, au lieu de le jeter comme avant — jusqu'ici on
-      // devinait la cause à l'aveugle (nom de modèle, portée de la requête, instruction de vérification
-      // de lien...) sans jamais voir le message d'erreur effectif. Même logique que jsonbinErrorMessage
-      // ci-dessus, qui avait permis de trouver la vraie cause côté JSONBin (versioning indisponible).
-      let detail = null;
-      try{
-        const body = await response.json();
-        detail = (body && body.error && body.error.message) ? String(body.error.message)
-                : (body && body.message ? String(body.message) : null);
-      }catch(e){ /* corps illisible ou vide — pas de détail disponible cette fois */ }
-      const err = new Error('PAYLOAD_TOO_LARGE');
-      err.detail = detail;
-      throw err;
-    }
+    if(response.status===413) throw new Error('PAYLOAD_TOO_LARGE');
     if(response.status===429){
       // Le corps JSON reste lisible même quand les en-têtes de quota sont masqués par CORS, et
       // contient le VRAI délai + la limite précise touchée (jour ou minute) — bien plus fiable
@@ -2017,15 +2003,14 @@
   let scanCooldownUntil = 0; // timestamp ms ; 0 = pas de cooldown actif
   let scanCooldownScope = null; // 'day' | 'minute' | null (origine inconnue) — pour le libellé affiché
   let scanCooldownTimer = null;
-  // consecutiveRateLimitHits sert au repli progressif (1min → 3min → 8min → 20min) quand Groq ne donne
-  // aucun délai exploitable. AVANT le 30/08/2026 il se remettait à 0 dès qu'UN appel Groq réussissait —
-  // correct pour un scan à 1 seul appel, mais avec le scan découpé en 3 groupes, un 1er groupe qui passe
-  // remet le compteur à 0 juste avant que le 2e/3e retombe sur la même limite : le délai recalculé
-  // repart alors toujours au palier le plus bas (1min), qui ne suffit jamais si le vrai quota met plus
-  // longtemps à se libérer — d'où l'impression de « boucle bloquée à 1min ». Le reset se base maintenant
-  // sur le temps écoulé depuis le dernier 429, pas sur la réussite d'un appel individuel.
-  let consecutiveRateLimitHits = 0;
-  let lastRateLimitHitAt = 0;
+  let consecutiveRateLimitHits = 0; // remis à 0 dès qu'un appel Groq réussit ; sert au repli progressif
+
+  // Reprise de scan interrompu : quand un scan s'arrête en cours de route à cause de la limite Groq,
+  // on retient quelles recherches (par label, stable) restent à faire pour CE mode ('targeted'/'wide').
+  // Au prochain clic sur le même bouton, on ne relance que celles-là au lieu de repartir de la
+  // première — qui, elle, a déjà consommé un appel pour rien la fois précédente. Volontairement en
+  // mémoire seulement (comme scanCooldownUntil) : repart de zéro si la page est rechargée.
+  let pendingScanGroups = { targeted:null, wide:null };
 
   function applyScanCooldown(ms, scope){
     if(!ms || ms<=0) return;
@@ -2067,12 +2052,7 @@
   // entre les 3 recherches, donc le cooldown doit démarrer immédiatement dans les deux cas, pas
   // seulement quand handleGroqError est appelé pour un échec total.
   function applyRateLimitCooldown(err){
-    const now = Date.now();
-    // Plus de 5 min depuis le dernier 429 : on considère que c'est un nouvel incident, pas la suite du
-    // précédent — repart du palier le plus bas. En dessous de 5 min : ça continue d'escalader.
-    if(now - lastRateLimitHitAt > 5*60*1000) consecutiveRateLimitHits = 0;
     consecutiveRateLimitHits++;
-    lastRateLimitHitAt = now;
     const detail = err && err.detail;
     let waitMs = (detail && detail.waitMs) || lastGroqRateInfo.retryAfterMs || lastGroqRateInfo.resetRequestsMs;
     const scope = (detail && detail.scope) || null;
@@ -2090,7 +2070,7 @@
     return { waitMs, scope, estimated };
   }
 
-  function handleGroqError(err, statusEl, context){
+  function handleGroqError(err, statusEl, context, precomputedCooldown){
     console.error('Appel Groq impossible', err, context||'');
     statusEl.className = 'scan-status err';
     const ctxTxt = context ? ` [${context}]` : '';
@@ -2098,10 +2078,12 @@
       statusEl.textContent = "⚠️ Clé API Groq refusée — vérifie qu'elle est correcte (ou régénère-la sur console.groq.com/keys), puis réessaie.";
       openKeyModal();
     }else if(err && err.message==='PAYLOAD_TOO_LARGE'){
-      const detailTxt = err.detail ? ` — Groq dit : "${err.detail}"` : ' (Groq n\'a donné aucun détail cette fois)';
-      statusEl.textContent = `⚠️ Requête trop volumineuse pour Groq (413)${ctxTxt}${detailTxt}.`;
+      statusEl.textContent = `⚠️ Requête trop volumineuse pour Groq (413)${ctxTxt}. Réessaie avec moins d'annonces à la fois.`;
     }else if(err && err.message==='RATE_LIMIT'){
-      const { waitMs, scope, estimated } = applyRateLimitCooldown(err);
+      // precomputedCooldown : passé par scanLive quand le cooldown a déjà été démarré pendant la boucle
+      // (dès qu'UN groupe est rate-limited) — évite de rappeler applyRateLimitCooldown une 2e fois pour
+      // la même erreur, ce qui fausserait consecutiveRateLimitHits et le repli progressif.
+      const { waitMs, scope, estimated } = precomputedCooldown || applyRateLimitCooldown(err);
       const waitTxt = fmtDurationFr(waitMs);
       const scopeLabel = scope==='day'
         ? ' (quota JOURNALIER Groq atteint — ne repart pas avant plusieurs heures)'
@@ -2141,38 +2123,66 @@
     statusEl.className = 'scan-status';
     statusEl.textContent = '';
 
-    const knownShort = allListings().slice(0,10).map(i=>`${i.entreprise}|${i.poste}`).join('\n');
-    // La vérification de lien ("le modèle ouvre chaque page trouvée pour checker qu'elle est encore
-    // valide") a été retirée d'ICI le 30/08/2026 : rétrécir le nombre de sources par requête n'a pas
-    // suffi à éliminer le 413 (confirmé sur un groupe à 4 sources), alors que c'est un point commun à
-    // TOUTES les requêtes Groq de l'appli, y compris la vérification (qui ne liste aucune source). La
-    // vérification de lien EXISTE DÉJÀ comme fonctionnalité séparée ("Vérifier annonces enregistrées") :
-    // le scan n'a plus qu'à trouver et lister, pas en plus visiter chaque page trouvée pour la checker.
-    const COMMON_HEAD = `alternance à Rennes (35) ou -1h, rentrée 2027. Exclure absolument tout poste commercial, vente, prospection commerciale, technico-commercial, business developer, chargé de clientèle — uniquement des postes techniques opérationnels (administration systèmes/réseaux, support, exploitation, sécurité). Ne visite pas les liens trouvés pour les vérifier — liste-les tels quels, la validité sera vérifiée séparément ensuite.`;
-    const FOOT_TARGETED = `\n\nDéjà au dossier :\n${knownShort}\n\nJSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, secteur, missions. Max 2 nouvelles. Si rien : [].`;
-    const FOOT_WIDE = `\n\nDéjà au dossier :\n${knownShort}\n\nJSON uniquement [ ... ]. Clés : poste, option, entreprise, cfa, lieu, niveau, accessibleBac, salaire, datePublication, echeance, debut, email, telephone, lien, secteur, missions, niveauCible (BTS/Bachelor/Licence Pro/Master). Max 2 nouvelles. Si rien : [].`;
+    // buildFoot : pied de prompt calculé dynamiquement à chaque appel.
+    // — Limité à 3 entrées du dossier existant + 3 dernières trouvées en session
+    //   (les nouvelles annonces trouvées au fil du scan s'ajoutent avant l'appel suivant,
+    //   ce qui évite les doublons inter-groupes sans gonfler le prompt).
+    // — La déduplication JS (isDup) reste la barrière principale ; ce pied est un filtre
+    //   "best-effort" pour éviter que compound-mini retourne des annonces inutiles.
+    // — Clé du correctif 413 : compound-mini ajoute en interne un system-prompt d'orchestration
+    //   + le contenu des pages web récupérées. Le budget token total explose vite.
+    //   Solution 1 (ce pied) : prompt utilisateur le plus court possible.
+    //   Solution 2 (groupes ci-dessous) : 2 sources max par appel au lieu de 4-5.
+    function buildFoot(isWide, sessionFound){
+      const staticKnown = allListings()
+        .filter(i => !sessionFound.some(s =>
+          (s.lien && i.lien && s.lien===i.lien) ||
+          (s.poste===i.poste && s.entreprise===i.entreprise)
+        ))
+        .slice(0,3)
+        .map(i=>`${i.entreprise}|${i.poste}`);
+      const sessionKnown = sessionFound.slice(-3).map(i=>`${i.entreprise}|${i.poste}`);
+      const knownStr = [...staticKnown, ...sessionKnown].join('\n');
+      const keys = isWide
+        ? `poste,entreprise,cfa,lieu,niveau,accessibleBac,lien,secteur,missions,niveauCible`
+        : `poste,entreprise,cfa,lieu,niveau,accessibleBac,lien,secteur,missions`;
+      return `${knownStr ? `\n\nConnu:\n${knownStr}` : ''}\n\nJSON seul:[{${keys}}]. Max 2. Si rien:[].`;
+    }
 
-    // Découpé en plusieurs petites requêtes séquentielles au lieu d'une seule englobant tout : Groq
-    // limite compound-mini à UN appel d'outil de recherche par requête, et demander de fouiller 14
-    // sources + vérifier chaque lien en une fois dépassait régulièrement la limite de taille (413) —
-    // y compris en scan ciblé, pourtant plus restreint que le large (confirmé le 30/08/2026 : les deux
-    // modes étaient touchés). Réduire la portée de CHAQUE appel est le seul levier qu'on contrôle
-    // vraiment, puisque ces prompts ne dépendent pas du volume de données déjà au dossier (pas de lot à
-    // réduire comme pour la vérification).
+    // Prompts volontairement courts + 2 sources max par appel.
+    // compound-mini ne peut utiliser qu'un seul outil de recherche par requête,
+    // et chaque page récupérée grossit le contexte interne → 413 au-delà d'un certain seuil.
+    // 6 petits appels ciblés valent mieux que 3 gros qui échouent tous.
+    const HD = `alternance informatique Rennes (35) ou ≤1h, rentrée 2027. Exclure commercial/vente — postes techniques uniquement (réseaux, systèmes, support, sécurité). Lister sans vérifier les liens.`;
+    const BAC = `Cherche BTS SIO SISR ou technicien réseau/systèmes/support. Profil Bac STI2D.`;
     const targetedGroups = [
-      { label:'CFA/écoles', body:`Offres ${COMMON_HEAD} Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Sources à vérifier en priorité : AFTEC, MyDigitalSchool, ESNA, CMA Bruz. Priorité aux offres accessibles après le Bac (accessibleBac:true).` },
-      { label:'jobboards', body:`Offres ${COMMON_HEAD} Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Sources à vérifier en priorité : Hellowork, Indeed, LinkedIn, labonnealternance.gouv.fr, Rennes Métropole. Priorité aux offres accessibles après le Bac (accessibleBac:true).` },
-      { label:'employeurs ciblés', body:`Offres ${COMMON_HEAD} Profil : niveau Bac (STI2D). Cherche : BTS SIO SISR, Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Sources à vérifier en priorité : SNCF, ACCEIS, Nomios, Axido, Airbus Cyber. Priorité aux offres accessibles après le Bac (accessibleBac:true).` }
+      { label:'CFA (AFTEC/MyDigital)',       body:`Offres ${HD} ${BAC} Sources : AFTEC, MyDigitalSchool.` },
+      { label:'CFA (ESNA/CMA Bruz)',          body:`Offres ${HD} ${BAC} Sources : ESNA Rennes, CMA Bruz.` },
+      { label:'Jobboards (Hellowork/Indeed)', body:`Offres ${HD} ${BAC} Sources : Hellowork, Indeed.` },
+      { label:'Jobboards (LinkedIn/LABN)',    body:`Offres ${HD} ${BAC} Sources : LinkedIn, labonnealternance.gouv.fr.` },
+      { label:'Employeurs (SNCF/ACCEIS)',     body:`Offres ${HD} ${BAC} Sources : SNCF, ACCEIS Rennes.` },
+      { label:'Employeurs (Nomios/Axido)',    body:`Offres ${HD} ${BAC} Sources : Nomios, Axido.` },
     ];
     const wideGroups = [
-      { label:'BTS/Technicien', body:`Recherche web libre : ${COMMON_HEAD} Niveau : BTS SIO SISR (accessible Bac). Cherche aussi intitulés : Technicien informatique, Technicien systèmes/réseaux, Technicien support, Technicien infrastructure. Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier.` },
-      { label:'Bachelor/Licence Pro', body:`Recherche web libre : ${COMMON_HEAD} Niveaux : Bachelor, Licence Pro cybersécurité/informatique (Bac+3). Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier.` },
-      { label:'Master cybersécurité', body:`Recherche web libre : ${COMMON_HEAD} Niveau : Master cybersécurité (Bac+5). Tous CFA et employeurs, y compris inconnus. Priorise nouvelles structures absentes du dossier.` }
+      { label:'BTS SIO SISR (libre)',         body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Tous CFA et employeurs.` },
+      { label:'Bachelor/Licence Pro cyber',   body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Tous CFA et employeurs.` },
+      { label:'Master cybersécurité (libre)', body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Tous CFA et employeurs.` },
     ];
-    const groups = mode === 'wide' ? wideGroups : targetedGroups;
-    const foot = mode === 'wide' ? FOOT_WIDE : FOOT_TARGETED;
+    const fullGroups = mode === 'wide' ? wideGroups : targetedGroups;
+    // foot calculé dynamiquement avant chaque appel (cf. buildFoot + sessionFoundListings)
 
-    let totalAdded = 0, failedGroups = 0, lastError = null, rateLimited = false;
+    // Reprise : si un scan précédent sur ce même mode s'est arrêté en cours de route (limite Groq),
+    // on ne relance que les recherches restantes (garde-fou : si les labels ne correspondent plus à
+    // rien — cas normalement impossible en session normale — on repart de la liste complète plutôt
+    // que de ne rien tenter).
+    let groups = pendingScanGroups[mode] ? fullGroups.filter(g => pendingScanGroups[mode].includes(g.label)) : fullGroups;
+    if(groups.length === 0) groups = fullGroups;
+    const alreadyDoneCount = fullGroups.length - groups.length;
+
+    let totalAdded = 0, succeededCount = 0, failedGroups = 0, lastError = null, rateLimited = false, rateLimitCooldownInfo = null;
+    // sessionFoundListings : annonces trouvées pendant CE scan. Passées à buildFoot() avant chaque
+    // appel suivant → le modèle ne les re-propose pas, même pour un groupe différent.
+    const sessionFoundListings = [];
     const allNewCfas = [], allNewEmps = [];
     const knownCfaNames = [...CFA_NETWORKS, ...customCfa].map(c=>(c.nom||'').toLowerCase());
     const knownEmpNames = customEmployeurs.map(e=>(e.nom||'').toLowerCase());
@@ -2180,10 +2190,13 @@
     try{
       for(let gi=0; gi<groups.length; gi++){
         const g = groups[gi];
-        btn.textContent = (mode === 'wide' ? '🌐 ' : '🔎 ') + `Recherche ${gi+1}/${groups.length} (${g.label})…`;
+        const displayPos = fullGroups.indexOf(g) + 1; // position réelle dans le cycle de scan (même en reprise partielle), pour un affichage cohérent avec le message final
+        btn.textContent = (mode === 'wide' ? '🌐 ' : '🔎 ') + `Recherche ${displayPos}/${fullGroups.length} (${g.label})…`;
         try{
+          const foot = buildFoot(mode === 'wide', sessionFoundListings);
           const text = await callGroqWithSearch(g.body + foot, statusEl);
-          // (le reset de consecutiveRateLimitHits ne se fait plus ici — voir sa déclaration plus haut)
+          consecutiveRateLimitHits = 0; // reset : cet appel a réussi
+          succeededCount++;
           const found = extractJsonArray(text);
 
           found.forEach(it=>{
@@ -2210,6 +2223,8 @@
               scanMode: mode,
               isNew: true, addedAt: Date.now()
             });
+            // Mise à jour immédiate de la liste de session → buildFoot() la prend en compte dès l'appel suivant
+            sessionFoundListings.push({ poste:it.poste, entreprise:it.entreprise, lien:it.lien||'' });
             totalAdded++;
           });
 
@@ -2232,6 +2247,8 @@
           }
 
           if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
+            const remaining = groups.slice(gi+1).map(x=>x.label);
+            pendingScanGroups[mode] = remaining.length ? remaining : null; // ce groupe-ci a abouti, on ne le refera pas
             applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
             rateLimited = true;
             break; // quota déjà à 0 : inutile d'insister sur les groupes suivants
@@ -2240,7 +2257,8 @@
           failedGroups++;
           lastError = err;
           if(err && err.message==='RATE_LIMIT'){
-            applyRateLimitCooldown(err); // démarre le cooldown/compte à rebours tout de suite, même si d'autres groupes ont déjà réussi
+            pendingScanGroups[mode] = groups.slice(gi).map(x=>x.label); // ce groupe-ci n'a PAS abouti, on le refera en premier la prochaine fois
+            rateLimitCooldownInfo = applyRateLimitCooldown(err); // démarre le cooldown/compte à rebours tout de suite (capturé pour éviter un 2e calcul si handleGroqError est aussi appelé en fin de scan)
             rateLimited = true;
             break;
           }
@@ -2249,6 +2267,7 @@
         }
         scheduleSave();
       }
+      if(!rateLimited) pendingScanGroups[mode] = null; // scan allé au bout de la liste (avec ou sans échecs hors-quota) : on repart de zéro la prochaine fois
 
       lastScanDate = new Date().toLocaleDateString('fr-FR');
       scheduleSave();
@@ -2265,16 +2284,22 @@
         showNewPartnerModal(allNewCfas, allNewEmps);
       }
 
-      const succeededGroups = groups.length - failedGroups;
+      // Compté explicitement (succeededCount++ au moment du succès) plutôt que par soustraction :
+      // l'ancien calcul (groups.length - failedGroups) comptait à tort les recherches jamais tentées
+      // (parce que le scan s'était arrêté avant de les atteindre) comme si elles avaient abouti.
+      // Cumulé sur le cycle complet (fullGroups) : en reprise, les recherches déjà abouties lors d'un
+      // tour précédent comptent aussi, et le dénominateur reste le vrai total du scan (3) au lieu de
+      // redevenir 2 puis 1 au fil des reprises.
+      const succeededGroups = alreadyDoneCount + succeededCount;
       if(totalAdded > 0){
         statusEl.className = 'scan-status ok';
         statusEl.textContent = `✅ ${totalAdded} nouvelle${totalAdded>1?'s':''} annonce${totalAdded>1?'s':''} trouvée${totalAdded>1?'s':''} et ajoutée${totalAdded>1?'s':''} au dossier`
-          + (failedGroups>0 ? ` (${succeededGroups}/${groups.length} recherches ont abouti — les autres ont échoué, réessaie plus tard pour compléter).` : '.');
-      }else if(failedGroups === groups.length){
-        handleGroqError(lastError, statusEl, (mode==='wide'?'scan large':'scan ciblé') + ` — ${groups.length} recherches, toutes en échec`);
-      }else if(failedGroups > 0){
+          + (succeededGroups<fullGroups.length ? ` (${succeededGroups}/${fullGroups.length} recherches ont abouti — les autres ont échoué, réessaie plus tard pour compléter).` : '.');
+      }else if(succeededGroups === 0){
+        handleGroqError(lastError, statusEl, (mode==='wide'?'scan large':'scan ciblé') + ` — ${fullGroups.length} recherches, toutes en échec`, rateLimitCooldownInfo);
+      }else if(succeededGroups < fullGroups.length){
         statusEl.className = 'scan-status err';
-        statusEl.textContent = `⚠️ Scan partiel : ${succeededGroups}/${groups.length} recherches ont abouti (aucune nouvelle annonce dessus) ${rateLimited ? '— limite Groq atteinte en cours de route.' : '— les autres ont échoué, réessaie plus tard.'}`;
+        statusEl.textContent = `⚠️ Scan partiel : ${succeededGroups}/${fullGroups.length} recherches ont abouti (aucune nouvelle annonce dessus) ${rateLimited ? '— limite Groq atteinte en cours de route.' : '— les autres ont échoué, réessaie plus tard.'}`;
       }else{
         statusEl.className = 'scan-status ok';
         statusEl.textContent = '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier, ou la recherche a pris trop de temps : réessaie si besoin).';
@@ -2379,7 +2404,7 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
         }
       }
       batch = sub; // le reste de la fonction traite le lot effectivement interrogé (réduit ou non)
-      // (le reset de consecutiveRateLimitHits ne se fait plus ici — voir sa déclaration plus haut)
+      consecutiveRateLimitHits = 0; // reset : cet appel a réussi
       const results = extractJsonArray(text);
 
       let nowUnavailable = 0;
