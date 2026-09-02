@@ -1207,6 +1207,7 @@
         hiddenIds = parsed.hiddenIds || [];
         trash = parsed.trash || [];
         lastScanDate = parsed.lastScanDate || null;
+        pendingScanGroups = parsed.pendingScanGroups || { targeted:null, wide:null };
         // Filet de sécurité : copie du dossier tel que chargé au démarrage, jamais retouchée pendant
         // la session. Si un pépin vide ou corrompt la sauvegarde principale plus tard, cette copie
         // permet de retrouver le dossier tel qu'il était à l'ouverture de l'app.
@@ -1232,7 +1233,7 @@
   }
 
   async function persistState(){
-    const payload = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: Date.now() };
+    const payload = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, pendingScanGroups, lastModified: Date.now() };
     const ok = await safeStorageSet(STORAGE_KEY, JSON.stringify(payload));
     if(ok) flashSaved();
     // Push cloud avec debounce (2s après la sauvegarde locale)
