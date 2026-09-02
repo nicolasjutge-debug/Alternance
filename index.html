@@ -2876,17 +2876,45 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
       }
     });
 
-    function mergeById(currentArr, incomingArr){
+    // Dédoublonnage par id ET par contenu (entreprise+poste) : deux annonces identiques trouvées lors
+    // de scans différents ont presque toujours des id différents (basés sur l'horodatage de création,
+    // jamais identiques d'une session à l'autre) — un dédoublonnage par id seul les considère donc
+    // TOUJOURS comme nouvelles, même quand c'est la même offre réelle déjà au dossier.
+    function contentKey(x){
+      return `${String(x.entreprise||'').trim().toLowerCase()}|${String(x.poste||'').trim().toLowerCase()}`;
+    }
+    function mergeListings(currentArr, incomingArr){
       const ids = new Set(currentArr.filter(x=>x&&x.id).map(x=>x.id));
+      const contentKeys = new Set(currentArr.filter(x=>x&&x.entreprise&&x.poste).map(contentKey));
       let added = 0;
       (incomingArr||[]).forEach(x=>{
-        if(x && x.id && !ids.has(x.id)){ currentArr.push(x); ids.add(x.id); added++; }
+        if(!x || !x.id) return;
+        const alreadyById = ids.has(x.id);
+        const alreadyByContent = x.entreprise && x.poste && contentKeys.has(contentKey(x));
+        if(alreadyById || alreadyByContent) return;
+        currentArr.push(x); ids.add(x.id);
+        if(x.entreprise && x.poste) contentKeys.add(contentKey(x));
+        added++;
       });
       return added;
     }
-    const addedListings   = mergeById(customListings,   data.customListings);
-    const addedCfa        = mergeById(customCfa,        data.customCfa);
-    const addedEmployeurs = mergeById(customEmployeurs, data.customEmployeurs);
+    // customCfa/customEmployeurs n'ont PAS de champ id (juste `nom`) — mergeListings (basé id) les
+    // ignorait donc silencieusement à 100% jusqu'ici. Clé de dédoublonnage propre pour ceux-là : nom.
+    function mergeByNom(currentArr, incomingArr){
+      const noms = new Set(currentArr.filter(x=>x&&x.nom).map(x=>String(x.nom).trim().toLowerCase()));
+      let added = 0;
+      (incomingArr||[]).forEach(x=>{
+        if(!x || !x.nom) return;
+        const k = String(x.nom).trim().toLowerCase();
+        if(noms.has(k)) return;
+        currentArr.push(x); noms.add(k);
+        added++;
+      });
+      return added;
+    }
+    const addedListings   = mergeListings(customListings,   data.customListings);
+    const addedCfa        = mergeByNom(customCfa,        data.customCfa);
+    const addedEmployeurs = mergeByNom(customEmployeurs, data.customEmployeurs);
 
     (data.hiddenIds||[]).forEach(id=>{ if(id && !hiddenIds.includes(id)) hiddenIds.push(id); });
 
