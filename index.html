@@ -1094,16 +1094,15 @@
     }
     const cloud = result.data;
     if((cloud.lastModified || 0) > localModified){
-      itemStates       = cloud.itemStates       || {};
-      customListings   = cloud.customListings   || [];
-      customCfa        = cloud.customCfa        || [];
-      customEmployeurs = cloud.customEmployeurs || [];
-      hiddenIds        = cloud.hiddenIds        || [];
-      trash            = cloud.trash            || [];
-      lastScanDate     = cloud.lastScanDate     || null;
-      await safeStorageSet(STORAGE_KEY, JSON.stringify({ itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: cloud.lastModified }));
-      renderAll(); updateScanHead(); updateTrashBadge();
-      setSyncStatus('ok', '☁️ Données cloud plus récentes — dossier mis à jour');
+      // FUSIONNE le cloud dans le local au lieu de le remplacer intégralement — corrigé le 02/09/2026.
+      // C'est ce remplacement pur qui est très probablement la cause racine de la toute première perte
+      // de données de ce projet : un cloud "plus récent" par horodatage n'est pas forcément plus
+      // COMPLET (ex. un appareil qui pousse après un incident, ou simplement moins de données que ce
+      // qu'un autre appareil avait accumulé localement sans avoir encore synchronisé). Un timestamp
+      // plus récent ne justifie plus d'écraser ce que cet appareil a de son côté — seulement de le
+      // compléter avec ce que le cloud a en plus (même logique que le bouton Fusionner, réutilisée ici).
+      const summary = await mergeStateData(cloud);
+      setSyncStatus('ok', summary ? `☁️ Données cloud fusionnées — ${summary}.` : '☁️ Synchronisé (rien de nouveau côté cloud).');
     } else {
       setSyncStatus('ok', '☁️ Synchronisé (données locales déjà à jour)');
       // Pousser local → cloud si local est plus récent
