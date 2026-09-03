@@ -404,6 +404,17 @@
       </div>
       <div id="syncStatusLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
       <div id="scanCooldownLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
+      <details id="groupSelectDetails" style="margin:-2px 0 8px;">
+        <summary style="cursor:pointer;font-size:12.5px;color:var(--text-dim);">🎯 Sélection manuelle par groupe (lancer 1 ou plusieurs recherches précises au lieu du cycle complet)</summary>
+        <div style="padding:8px 2px 4px;">
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">Ciblé :</div>
+          <div id="groupCheckboxesTargeted"></div>
+          <button class="btn ghost" id="launchSelectedTargetedBtn" type="button" style="font-size:12px;padding:6px 10px;margin:6px 0 12px;">▶️ Lancer la sélection (ciblé)</button>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">Élargi :</div>
+          <div id="groupCheckboxesWide"></div>
+          <button class="btn ghost" id="launchSelectedWideBtn" type="button" style="font-size:12px;padding:6px 10px;margin-top:6px;">▶️ Lancer la sélection (élargi)</button>
+        </div>
+      </details>
       <div class="scan-status" id="scanStatus"></div>
       <div class="scan-links">
         <a href="https://www.aftec.fr/alternance-informatique" target="_blank" rel="noopener noreferrer">🎓 AFTEC — Informatique Rennes</a>
@@ -2017,13 +2028,14 @@
   let scanCooldownUntil = 0; // timestamp ms ; 0 = pas de cooldown actif
   let scanCooldownScope = null; // 'day' | 'minute' | null (origine inconnue) — pour le libellé affiché
   let scanCooldownTimer = null;
+  let scanCooldownMode = null; // 'targeted' | 'wide' | null — quel scan a déclenché CE cooldown, pour la reprise automatique ci-dessous
   let consecutiveRateLimitHits = 0; // remis à 0 dès qu'un appel Groq réussit ; sert au repli progressif
 
-  // Reprise de scan interrompu : quand un scan s'arrête en cours de route à cause de la limite Groq,
-  // on retient quelles recherches (par label, stable) restent à faire pour CE mode ('targeted'/'wide').
-  // Au prochain clic sur le même bouton, on ne relance que celles-là au lieu de repartir de la
-  // première — qui, elle, a déjà consommé un appel pour rien la fois précédente. Volontairement en
-  // mémoire seulement (comme scanCooldownUntil) : repart de zéro si la page est rechargée.
+  // Reprise de scan interrompu : quand un scan s'arrête en cours de route (quota OU groupes en échec
+  // 413/réseau), on retient quelles recherches (par label, stable) restent à faire pour CE mode
+  // ('targeted'/'wide'). Au prochain clic sur le même bouton, on ne relance que celles-là au lieu de
+  // repartir de la première. Persisté (local + cloud, voir loadState/persistState) depuis le 02/09/2026 :
+  // survit à une fermeture/rechargement de l'appli, pas seulement à l'intérieur d'une session continue.
   let pendingScanGroups = { targeted:null, wide:null };
 
   function applyScanCooldown(ms, scope){
@@ -2047,6 +2059,13 @@
     if(!cooling){
       scanCooldownUntil = 0; scanCooldownScope = null;
       if(label) label.textContent = '';
+      // Reprise automatique : si ce cooldown venait d'un scan et qu'il reste des groupes en attente
+      // pour ce mode, on relance tout seul — pas besoin de revenir cliquer manuellement après l'attente.
+      const modeToResume = scanCooldownMode;
+      scanCooldownMode = null;
+      if(modeToResume && pendingScanGroups[modeToResume] && pendingScanGroups[modeToResume].length){
+        setTimeout(()=>{ scanLive(modeToResume); }, 300);
+      }
       return;
     }
     if(label){
@@ -2110,7 +2129,38 @@
     }
   }
 
-  async function scanLive(mode = 'targeted'){
+  // Prompts volontairement courts + 2 sources max par appel.
+  // compound-mini ne peut utiliser qu'un seul outil de recherche par requête,
+  // et chaque page récupérée grossit le contexte interne → 413 au-delà d'un certain seuil.
+  // 6 petits appels ciblés valent mieux que 3 gros qui échouent tous.
+  // Extraits au niveau module (au lieu d'être locaux à scanLive) pour être lisibles par l'UI de
+  // sélection manuelle par groupe (voir populateGroupCheckboxes) sans dupliquer les libellés.
+  const HD = `alternance informatique Rennes (35) ou ≤1h, rentrée 2027. Exclure commercial/vente — postes techniques uniquement (réseaux, systèmes, support, sécurité). Lister sans vérifier les liens.`;
+  const BAC = `Cherche BTS SIO SISR ou technicien réseau/systèmes/support. Profil Bac STI2D.`;
+  const TARGETED_GROUPS = [
+    { label:'CFA (AFTEC/MyDigital)',       body:`Offres ${HD} ${BAC} Sources : AFTEC, MyDigitalSchool.` },
+    { label:'CFA (ESNA/CMA Bruz)',          body:`Offres ${HD} ${BAC} Sources : ESNA Rennes, CMA Bruz.` },
+    { label:'Jobboards (Hellowork/Indeed)', body:`Offres ${HD} ${BAC} Sources : Hellowork, Indeed.` },
+    { label:'Jobboards (LinkedIn/LABN)',    body:`Offres ${HD} ${BAC} Sources : LinkedIn, labonnealternance.gouv.fr.` },
+    { label:'Employeurs (SNCF/ACCEIS)',     body:`Offres ${HD} ${BAC} Sources : SNCF, ACCEIS Rennes.` },
+    { label:'Employeurs (Nomios/Axido)',    body:`Offres ${HD} ${BAC} Sources : Nomios, Axido.` },
+  ];
+  // Scan large aligné le 02/09/2026 sur le même principe que le ciblé (confirmé fonctionnel à
+  // 2 sources/appel, alors que 3 groupes plus larges par niveau échouaient encore en 413) : au lieu
+  // d'une recherche complètement libre par niveau, chaque niveau est maintenant scindé en 2 appels
+  // nommant chacun 2 sites généralistes concrets — l'esprit "découverte de CFA/employeurs inconnus"
+  // est gardé via la consigne explicite, mais la recherche elle-même a une cible technique aussi
+  // étroite que le ciblé.
+  const WIDE_GROUPS = [
+    { label:'BTS/Technicien (Indeed/LinkedIn)',              body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
+    { label:'BTS/Technicien (France Travail/Studyrama)',     body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Sources : France Travail, Studyrama. Priorise CFA/employeurs inconnus du dossier.` },
+    { label:'Bachelor/Licence Pro (Indeed/LinkedIn)',        body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
+    { label:'Bachelor/Licence Pro (France Travail/Diplomeo)',body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Sources : France Travail, Diplomeo. Priorise CFA/employeurs inconnus du dossier.` },
+    { label:'Master cyber (Indeed/LinkedIn)',                body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
+    { label:'Master cyber (France Travail/Diplomeo)',        body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Sources : France Travail, Diplomeo. Priorise CFA/employeurs inconnus du dossier.` },
+  ];
+
+  async function scanLive(mode = 'targeted', explicitLabels = null){
     if(scanCooldownUntil > Date.now()){
       const statusEl = document.getElementById('scanStatus');
       statusEl.className = 'scan-status err';
@@ -2163,42 +2213,21 @@
       return `${knownStr ? `\n\nConnu:\n${knownStr}` : ''}\n\nJSON seul:[{${keys}}]. Max 2. Si rien:[].`;
     }
 
-    // Prompts volontairement courts + 2 sources max par appel.
-    // compound-mini ne peut utiliser qu'un seul outil de recherche par requête,
-    // et chaque page récupérée grossit le contexte interne → 413 au-delà d'un certain seuil.
-    // 6 petits appels ciblés valent mieux que 3 gros qui échouent tous.
-    const HD = `alternance informatique Rennes (35) ou ≤1h, rentrée 2027. Exclure commercial/vente — postes techniques uniquement (réseaux, systèmes, support, sécurité). Lister sans vérifier les liens.`;
-    const BAC = `Cherche BTS SIO SISR ou technicien réseau/systèmes/support. Profil Bac STI2D.`;
-    const targetedGroups = [
-      { label:'CFA (AFTEC/MyDigital)',       body:`Offres ${HD} ${BAC} Sources : AFTEC, MyDigitalSchool.` },
-      { label:'CFA (ESNA/CMA Bruz)',          body:`Offres ${HD} ${BAC} Sources : ESNA Rennes, CMA Bruz.` },
-      { label:'Jobboards (Hellowork/Indeed)', body:`Offres ${HD} ${BAC} Sources : Hellowork, Indeed.` },
-      { label:'Jobboards (LinkedIn/LABN)',    body:`Offres ${HD} ${BAC} Sources : LinkedIn, labonnealternance.gouv.fr.` },
-      { label:'Employeurs (SNCF/ACCEIS)',     body:`Offres ${HD} ${BAC} Sources : SNCF, ACCEIS Rennes.` },
-      { label:'Employeurs (Nomios/Axido)',    body:`Offres ${HD} ${BAC} Sources : Nomios, Axido.` },
-    ];
-    // Scan large aligné le 02/09/2026 sur le même principe que le ciblé (confirmé fonctionnel à
-    // 2 sources/appel, alors que 3 groupes plus larges par niveau échouaient encore en 413) : au lieu
-    // d'une recherche complètement libre par niveau, chaque niveau est maintenant scindé en 2 appels
-    // nommant chacun 2 sites généralistes concrets — l'esprit "découverte de CFA/employeurs inconnus"
-    // est gardé via la consigne explicite, mais la recherche elle-même a une cible technique aussi
-    // étroite que le ciblé.
-    const wideGroups = [
-      { label:'BTS/Technicien (Indeed/LinkedIn)',              body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
-      { label:'BTS/Technicien (France Travail/Studyrama)',     body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Sources : France Travail, Studyrama. Priorise CFA/employeurs inconnus du dossier.` },
-      { label:'Bachelor/Licence Pro (Indeed/LinkedIn)',        body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
-      { label:'Bachelor/Licence Pro (France Travail/Diplomeo)',body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Sources : France Travail, Diplomeo. Priorise CFA/employeurs inconnus du dossier.` },
-      { label:'Master cyber (Indeed/LinkedIn)',                body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
-      { label:'Master cyber (France Travail/Diplomeo)',        body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Sources : France Travail, Diplomeo. Priorise CFA/employeurs inconnus du dossier.` },
-    ];
-    const fullGroups = mode === 'wide' ? wideGroups : targetedGroups;
+    const fullGroups = mode === 'wide' ? WIDE_GROUPS : TARGETED_GROUPS;
     // foot calculé dynamiquement avant chaque appel (cf. buildFoot + sessionFoundListings)
 
-    // Reprise : si un scan précédent sur ce même mode s'est arrêté en cours de route (limite Groq),
-    // on ne relance que les recherches restantes (garde-fou : si les labels ne correspondent plus à
-    // rien — cas normalement impossible en session normale — on repart de la liste complète plutôt
-    // que de ne rien tenter).
-    let groups = pendingScanGroups[mode] ? fullGroups.filter(g => pendingScanGroups[mode].includes(g.label)) : fullGroups;
+    // Sélection des groupes à exécuter, par ordre de priorité :
+    // 1) sélection manuelle explicite (UI "Sélection par groupe") si fournie et non vide
+    // 2) reprise automatique (pendingScanGroups) si un scan précédent s'est arrêté en cours de route
+    // 3) sinon, la liste complète
+    // Garde-fou : si les labels ne correspondent plus à rien (cas normalement impossible en usage
+    // normal), on repart de la liste complète plutôt que de ne rien tenter.
+    let groups;
+    if(explicitLabels && explicitLabels.length){
+      groups = fullGroups.filter(g => explicitLabels.includes(g.label));
+    }else{
+      groups = pendingScanGroups[mode] ? fullGroups.filter(g => pendingScanGroups[mode].includes(g.label)) : fullGroups;
+    }
     if(groups.length === 0) groups = fullGroups;
     const alreadyDoneCount = fullGroups.length - groups.length;
 
@@ -2279,6 +2308,7 @@
             const remaining = groups.slice(gi+1).map(x=>x.label);
             pendingScanGroups[mode] = remaining.length ? remaining : null; // ce groupe-ci a abouti, on ne le refera pas
             applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
+            scanCooldownMode = mode;
             rateLimited = true;
             break; // quota déjà à 0 : inutile d'insister sur les groupes suivants
           }
@@ -2288,6 +2318,7 @@
           if(err && err.message==='RATE_LIMIT'){
             pendingScanGroups[mode] = groups.slice(gi).map(x=>x.label); // ce groupe-ci n'a PAS abouti, on le refera en premier la prochaine fois
             rateLimitCooldownInfo = applyRateLimitCooldown(err); // démarre le cooldown/compte à rebours tout de suite (capturé pour éviter un 2e calcul si handleGroqError est aussi appelé en fin de scan)
+            scanCooldownMode = mode;
             rateLimited = true;
             break;
           }
@@ -2341,6 +2372,7 @@
 
       if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
         applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
+        scanCooldownMode = mode;
       }
     }finally{
       btn.textContent = originalLabel;
@@ -3021,6 +3053,26 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     document.getElementById('scanNowBtn').addEventListener('click', ()=>scanLive('targeted'));
     document.getElementById('scanWideBtn').addEventListener('click', ()=>scanLive('wide'));
     document.getElementById('verifyBtn').addEventListener('click', verifySavedListings);
+
+    // Sélection manuelle par groupe : cases à cocher générées depuis TARGETED_GROUPS/WIDE_GROUPS (pas
+    // de libellés en dur dans le HTML, pour ne jamais désynchroniser l'UI des vrais groupes du scan).
+    function populateGroupCheckboxes(containerId, groupList, cssClass){
+      const container = document.getElementById(containerId);
+      container.innerHTML = groupList.map(g =>
+        `<label style="display:block;font-size:13px;margin:3px 0;"><input type="checkbox" class="${cssClass}" value="${g.label.replace(/"/g,'&quot;')}"> ${g.label}</label>`
+      ).join('');
+    }
+    populateGroupCheckboxes('groupCheckboxesTargeted', TARGETED_GROUPS, 'group-cb-targeted');
+    populateGroupCheckboxes('groupCheckboxesWide', WIDE_GROUPS, 'group-cb-wide');
+
+    function launchSelected(mode, cssClass){
+      const selected = Array.from(document.querySelectorAll(`.${cssClass}:checked`)).map(cb=>cb.value);
+      if(selected.length === 0){ alert('Coche au moins un groupe avant de lancer.'); return; }
+      scanLive(mode, selected);
+    }
+    document.getElementById('launchSelectedTargetedBtn').addEventListener('click', ()=>launchSelected('targeted', 'group-cb-targeted'));
+    document.getElementById('launchSelectedWideBtn').addEventListener('click', ()=>launchSelected('wide', 'group-cb-wide'));
+
     document.getElementById('exportBtn').addEventListener('click', exportCsv);
     document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
     document.getElementById('exportContactsBtn').addEventListener('click', exportContactsZimbra);
