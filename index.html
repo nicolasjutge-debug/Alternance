@@ -2203,6 +2203,7 @@
     const alreadyDoneCount = fullGroups.length - groups.length;
 
     let totalAdded = 0, succeededCount = 0, failedGroups = 0, lastError = null, rateLimited = false, rateLimitCooldownInfo = null;
+    const failedGroupLabels = []; // groupes en échec (413, réseau...) hors quota — retentés en priorité au prochain clic
     // sessionFoundListings : annonces trouvées pendant CE scan. Passées à buildFoot() avant chaque
     // appel suivant → le modèle ne les re-propose pas, même pour un groupe différent.
     const sessionFoundListings = [];
@@ -2291,11 +2292,16 @@
             break;
           }
           // sinon (413, réseau...) : les groupes suivants sont plus petits et pas forcément touchés par
-          // la même limite, donc on continue au lieu d'abandonner tout le scan.
+          // la même limite, donc on continue au lieu d'abandonner tout le scan — mais on retient lequel
+          // a échoué pour le retenter en priorité au prochain clic (voir plus bas).
+          failedGroupLabels.push(g.label);
         }
         scheduleSave();
       }
-      if(!rateLimited) pendingScanGroups[mode] = null; // scan allé au bout de la liste (avec ou sans échecs hors-quota) : on repart de zéro la prochaine fois
+      // Repart de zéro seulement si tout a réussi ; sinon, les groupes en échec (quota OU 413/réseau)
+      // restent prioritaires au prochain clic — un scan à 5/6 échecs ne doit pas revenir à la case
+      // départ, sous peine de ne jamais vraiment retenter les groupes qui posent problème.
+      if(!rateLimited) pendingScanGroups[mode] = failedGroupLabels.length ? failedGroupLabels : null;
 
       lastScanDate = new Date().toLocaleDateString('fr-FR');
       scheduleSave();
