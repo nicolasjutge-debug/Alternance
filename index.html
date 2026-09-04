@@ -1960,7 +1960,20 @@
     };
 
     if(response.status===401 || response.status===403) throw new Error('BAD_KEY');
-    if(response.status===413) throw new Error('PAYLOAD_TOO_LARGE');
+    if(response.status===413){
+      // Lit le corps de la réponse au lieu de le jeter — utile pour tout futur diagnostic, même si pour
+      // CETTE erreur précise on sait déjà (testé le 02/09/2026) que Groq ne renvoie que le texte HTTP
+      // générique "Request Entity Too Large", sans détail exploitable.
+      let detail = null;
+      try{
+        const body = await response.json();
+        detail = (body && body.error && body.error.message) ? String(body.error.message)
+                : (body && body.message ? String(body.message) : null);
+      }catch(e){ /* corps illisible ou vide */ }
+      const err = new Error('PAYLOAD_TOO_LARGE');
+      err.detail = detail;
+      throw err;
+    }
     if(response.status===429){
       // Le corps JSON reste lisible même quand les en-têtes de quota sont masqués par CORS, et
       // contient le VRAI délai + la limite précise touchée (jour ou minute) — bien plus fiable
@@ -2029,7 +2042,14 @@
   let scanCooldownScope = null; // 'day' | 'minute' | null (origine inconnue) — pour le libellé affiché
   let scanCooldownTimer = null;
   let scanCooldownMode = null; // 'targeted' | 'wide' | null — quel scan a déclenché CE cooldown, pour la reprise automatique ci-dessous
-  let consecutiveRateLimitHits = 0; // remis à 0 dès qu'un appel Groq réussit ; sert au repli progressif
+  // consecutiveRateLimitHits sert au repli progressif (1min → 3min → 8min → 20min) quand Groq ne donne
+  // aucun délai exploitable. PAS remis à 0 par la réussite d'un appel individuel (testé et invalidé le
+  // 02/09/2026 : avec un scan à plusieurs groupes, un 1er groupe qui passe remet le compteur à 0 juste
+  // avant que le 2e/3e retombe sur la même limite — le délai recalculé repart alors toujours au palier
+  // le plus bas, insuffisant si le vrai quota met plus longtemps à se libérer = "boucle bloquée à
+  // 1min"). Le reset se base sur le temps écoulé depuis le dernier 429 (voir applyRateLimitCooldown).
+  let consecutiveRateLimitHits = 0;
+  let lastRateLimitHitAt = 0;
 
   // Reprise de scan interrompu : quand un scan s'arrête en cours de route (quota OU groupes en échec
   // 413/réseau), on retient quelles recherches (par label, stable) restent à faire pour CE mode
@@ -2085,7 +2105,12 @@
   // entre les 3 recherches, donc le cooldown doit démarrer immédiatement dans les deux cas, pas
   // seulement quand handleGroqError est appelé pour un échec total.
   function applyRateLimitCooldown(err){
+    const now = Date.now();
+    // Plus de 5 min depuis le dernier 429 : nouvel incident, pas la suite du précédent — repart du
+    // palier le plus bas. En dessous de 5 min : ça continue d'escalader.
+    if(now - lastRateLimitHitAt > 5*60*1000) consecutiveRateLimitHits = 0;
     consecutiveRateLimitHits++;
+    lastRateLimitHitAt = now;
     const detail = err && err.detail;
     let waitMs = (detail && detail.waitMs) || lastGroqRateInfo.retryAfterMs || lastGroqRateInfo.resetRequestsMs;
     const scope = (detail && detail.scope) || null;
@@ -2111,7 +2136,8 @@
       statusEl.textContent = "⚠️ Clé API Groq refusée — vérifie qu'elle est correcte (ou régénère-la sur console.groq.com/keys), puis réessaie.";
       openKeyModal();
     }else if(err && err.message==='PAYLOAD_TOO_LARGE'){
-      statusEl.textContent = `⚠️ Requête trop volumineuse pour Groq (413)${ctxTxt}. Réessaie avec moins d'annonces à la fois.`;
+      const detailTxt = err.detail ? ` — Groq dit : "${err.detail}"` : '';
+      statusEl.textContent = `⚠️ Requête trop volumineuse pour Groq (413)${ctxTxt}${detailTxt}. Réessaie avec moins d'annonces à la fois.`;
     }else if(err && err.message==='RATE_LIMIT'){
       // precomputedCooldown : passé par scanLive quand le cooldown a déjà été démarré pendant la boucle
       // (dès qu'UN groupe est rate-limited) — évite de rappeler applyRateLimitCooldown une 2e fois pour
@@ -2248,7 +2274,7 @@
         try{
           const foot = buildFoot(mode === 'wide', sessionFoundListings);
           const text = await callGroqWithSearch(g.body + foot, statusEl);
-          consecutiveRateLimitHits = 0; // reset : cet appel a réussi
+          // (pas de reset de consecutiveRateLimitHits ici — voir sa déclaration plus haut)
           succeededCount++;
           const found = extractJsonArray(text);
 
@@ -2470,7 +2496,7 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
         }
       }
       batch = sub; // le reste de la fonction traite le lot effectivement interrogé (réduit ou non)
-      consecutiveRateLimitHits = 0; // reset : cet appel a réussi
+      // (pas de reset de consecutiveRateLimitHits ici — voir sa déclaration plus haut)
       const results = extractJsonArray(text);
 
       let nowUnavailable = 0;
