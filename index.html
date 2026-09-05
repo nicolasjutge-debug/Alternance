@@ -404,6 +404,7 @@
       </div>
       <div id="syncStatusLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
       <div id="scanCooldownLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
+      <div id="pendingScanIndicator" style="font-size:12px;color:var(--text-dim);margin:-2px 0 8px;"></div>
       <details id="groupSelectDetails" style="margin:-2px 0 8px;">
         <summary style="cursor:pointer;font-size:12.5px;color:var(--text-dim);">🎯 Sélection manuelle par groupe (lancer 1 ou plusieurs recherches précises au lieu du cycle complet)</summary>
         <div style="padding:8px 2px 4px;">
@@ -2042,6 +2043,18 @@
   let scanCooldownScope = null; // 'day' | 'minute' | null (origine inconnue) — pour le libellé affiché
   let scanCooldownTimer = null;
   let scanCooldownMode = null; // 'targeted' | 'wide' | null — quel scan a déclenché CE cooldown, pour la reprise automatique ci-dessous
+
+  // Indicateur factuel de ce que pendingScanGroups contient VRAIMENT — évite d'avoir à deviner depuis
+  // le résultat d'un reclic si la reprise cible bien les bons groupes ou repart de zéro. Appelé au
+  // chargement (attachListeners) et à la fin de chaque scanLive.
+  function updatePendingScanIndicator(){
+    const el = document.getElementById('pendingScanIndicator');
+    if(!el) return;
+    const parts = [];
+    if(pendingScanGroups.targeted && pendingScanGroups.targeted.length) parts.push(`Ciblé : ${pendingScanGroups.targeted.join(', ')}`);
+    if(pendingScanGroups.wide && pendingScanGroups.wide.length) parts.push(`Élargi : ${pendingScanGroups.wide.join(', ')}`);
+    el.textContent = parts.length ? `🔁 En attente de reprise — ${parts.join(' | ')}` : '';
+  }
   // consecutiveRateLimitHits sert au repli progressif (1min → 3min → 8min → 20min) quand Groq ne donne
   // aucun délai exploitable. PAS remis à 0 par la réussite d'un appel individuel (testé et invalidé le
   // 02/09/2026 : avec un scan à plusieurs groupes, un 1er groupe qui passe remet le compteur à 0 juste
@@ -2259,6 +2272,8 @@
 
     let totalAdded = 0, succeededCount = 0, failedGroups = 0, lastError = null, rateLimited = false, rateLimitCooldownInfo = null;
     const failedGroupLabels = []; // groupes en échec (413, réseau...) hors quota — retentés en priorité au prochain clic
+    let consecutiveGroupFailures = 0; // remis à 0 à chaque succès — 3 d'affilée = signal d'un vrai souci (connexion/clé), pas juste la variabilité normale du contenu récupéré par Groq
+    let stoppedOnConsecutiveFailures = false;
     // sessionFoundListings : annonces trouvées pendant CE scan. Passées à buildFoot() avant chaque
     // appel suivant → le modèle ne les re-propose pas, même pour un groupe différent.
     const sessionFoundListings = [];
@@ -2275,6 +2290,7 @@
           const foot = buildFoot(mode === 'wide', sessionFoundListings);
           const text = await callGroqWithSearch(g.body + foot, statusEl);
           // (pas de reset de consecutiveRateLimitHits ici — voir sa déclaration plus haut)
+          consecutiveGroupFailures = 0; // un succès casse la série d'échecs
           succeededCount++;
           const found = extractJsonArray(text);
 
@@ -2352,13 +2368,30 @@
           // la même limite, donc on continue au lieu d'abandonner tout le scan — mais on retient lequel
           // a échoué pour le retenter en priorité au prochain clic (voir plus bas).
           failedGroupLabels.push(g.label);
+          consecutiveGroupFailures++;
+          if(consecutiveGroupFailures >= 3){
+            // 3 échecs D'AFFILÉE (pas juste 3 au total) : la variabilité normale du contenu récupéré par
+            // Groq ne produit pas ça — c'est le signe d'un vrai souci qui persiste (connexion, clé), pas
+            // la peine d'insister sur les groupes restants dans l'immédiat. Ils restent en attente pour
+            // le prochain clic (même mécanisme que pour le quota), rien n'est abandonné définitivement.
+            const remainingLabels = groups.slice(gi+1).map(x=>x.label);
+            pendingScanGroups[mode] = [...new Set([...failedGroupLabels, ...remainingLabels])];
+            stoppedOnConsecutiveFailures = true;
+            break;
+          }
         }
-        scheduleSave();
+        // await persistState() direct (pas scheduleSave, qui attend 450ms) : pendant un scan, chaque
+        // groupe est déjà naturellement espacé par le temps de l'appel Groq — le délai de scheduleSave
+        // n'apporte rien ici, et crée une fenêtre où fermer l'appli juste après une erreur pourrait
+        // perdre ce qu'un groupe précédent venait de trouver. On attend la sauvegarde AVANT de passer
+        // au groupe suivant, pour que ce soit déjà écrit quoi qu'il arrive ensuite.
+        await persistState();
       }
       // Repart de zéro seulement si tout a réussi ; sinon, les groupes en échec (quota OU 413/réseau)
       // restent prioritaires au prochain clic — un scan à 5/6 échecs ne doit pas revenir à la case
       // départ, sous peine de ne jamais vraiment retenter les groupes qui posent problème.
-      if(!rateLimited) pendingScanGroups[mode] = failedGroupLabels.length ? failedGroupLabels : null;
+      // (stoppedOnConsecutiveFailures : pendingScanGroups déjà positionné au point d'arrêt, ne pas l'écraser ici)
+      if(!rateLimited && !stoppedOnConsecutiveFailures) pendingScanGroups[mode] = failedGroupLabels.length ? failedGroupLabels : null;
 
       lastScanDate = new Date().toLocaleDateString('fr-FR');
       scheduleSave();
@@ -2385,7 +2418,11 @@
       if(totalAdded > 0){
         statusEl.className = 'scan-status ok';
         statusEl.textContent = `✅ ${totalAdded} nouvelle${totalAdded>1?'s':''} annonce${totalAdded>1?'s':''} trouvée${totalAdded>1?'s':''} et ajoutée${totalAdded>1?'s':''} au dossier`
-          + (succeededGroups<fullGroups.length ? ` (${succeededGroups}/${fullGroups.length} recherches ont abouti — les autres ont échoué, réessaie plus tard pour compléter).` : '.');
+          + (succeededGroups<fullGroups.length ? ` (${succeededGroups}/${fullGroups.length} recherches ont abouti — les autres ont échoué, réessaie plus tard pour compléter).` : '.')
+          + (stoppedOnConsecutiveFailures ? ' Arrêté après 3 échecs d\'affilée : vérifie ta connexion avant de relancer le reste.' : '');
+      }else if(stoppedOnConsecutiveFailures){
+        statusEl.className = 'scan-status err';
+        statusEl.textContent = `⚠️ Scan arrêté après 3 échecs d'affilée (${succeededGroups}/${fullGroups.length} recherches abouties avant ça) — ce n'est probablement pas juste la variabilité habituelle. Vérifie ta connexion (ou une extension qui bloquerait api.groq.com), puis relance : ça reprendra là où ça s'est arrêté.`;
       }else if(succeededGroups === 0){
         handleGroqError(lastError, statusEl, (mode==='wide'?'scan large':'scan ciblé') + ` — ${fullGroups.length} recherches, toutes en échec`, rateLimitCooldownInfo);
       }else if(succeededGroups < fullGroups.length){
@@ -2403,6 +2440,7 @@
     }finally{
       btn.textContent = originalLabel;
       tickScanCooldown(); // réactive les boutons seulement si aucun cooldown n'est actif
+      updatePendingScanIndicator();
     }
   }
 
@@ -3090,6 +3128,7 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     }
     populateGroupCheckboxes('groupCheckboxesTargeted', TARGETED_GROUPS, 'group-cb-targeted');
     populateGroupCheckboxes('groupCheckboxesWide', WIDE_GROUPS, 'group-cb-wide');
+    updatePendingScanIndicator();
 
     function launchSelected(mode, cssClass){
       const selected = Array.from(document.querySelectorAll(`.${cssClass}:checked`)).map(cb=>cb.value);
