@@ -2394,7 +2394,11 @@
       if(!rateLimited && !stoppedOnConsecutiveFailures) pendingScanGroups[mode] = failedGroupLabels.length ? failedGroupLabels : null;
 
       lastScanDate = new Date().toLocaleDateString('fr-FR');
-      scheduleSave();
+      await persistState(); // sauvegarde locale finale (inclut pendingScanGroups mis à jour ci-dessus)
+      // Push cloud immédiat plutôt que via le délai de 2s habituel : un scan peut prendre du temps, et
+      // si l'appli est fermée dès l'apparition du message de fin (avant ces 2s), le push programmé est
+      // tué avec l'onglet — sync qui semble "ne plus se faire" alors que le local, lui, est à jour.
+      if(syncCfg){ clearTimeout(cloudPushTimer); await cloudPush(); }
       renderAll();
       updateScanHead();
 
