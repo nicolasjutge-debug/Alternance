@@ -1208,6 +1208,15 @@
   }
 
   async function loadState(){
+    // Lu AVANT le reste : sert de référence pour la vérification de cohérence ci-dessous. Ne pas lire
+    // le backup APRÈS avoir chargé le principal, sinon la comparaison se ferait contre une copie déjà
+    // écrasée par le tout dernier chargement (voir plus bas pourquoi l'ordre compte ici).
+    let previousBackup = null;
+    try{
+      const backupRes = await safeStorageGet(STORAGE_KEY + '_backup');
+      if(backupRes && backupRes.value) previousBackup = JSON.parse(backupRes.value);
+    }catch(e){ /* pas de backup exploitable — tant pis, pas de comparaison possible */ }
+
     const res = await safeStorageGet(STORAGE_KEY);
     if(res && res.value){
       try{
@@ -1220,10 +1229,23 @@
         trash = parsed.trash || [];
         lastScanDate = parsed.lastScanDate || null;
         pendingScanGroups = parsed.pendingScanGroups || { targeted:null, wide:null };
-        // Filet de sécurité : copie du dossier tel que chargé au démarrage, jamais retouchée pendant
-        // la session. Si un pépin vide ou corrompt la sauvegarde principale plus tard, cette copie
-        // permet de retrouver le dossier tel qu'il était à l'ouverture de l'app.
-        safeStorageSet(STORAGE_KEY + '_backup', res.value);
+
+        // Vérification de cohérence (ajoutée le 03/09/2026, suite à une chute inexpliquée 270→16) :
+        // si le dossier tout juste chargé a MOINS DE LA MOITIÉ des annonces que le secours local
+        // précédent (et que celui-ci en avait un nombre significatif), quelque chose s'est effondré
+        // entre les deux derniers chargements — on ne l'affiche pas tel quel, on fusionne le secours
+        // par-dessus pour récupérer ce qui a disparu, plutôt que de propager silencieusement la perte.
+        const prevCount = previousBackup ? (previousBackup.customListings||[]).length : 0;
+        const newCount = customListings.length;
+        if(previousBackup && prevCount > 20 && newCount < prevCount / 2){
+          await mergeStateData(previousBackup);
+          console.warn(`Chute suspecte détectée au chargement (${newCount} contre ${prevCount} dans le secours local) — fusion automatique appliquée.`);
+        }
+
+        // Filet de sécurité : copie du dossier tel que RÉSOLU ci-dessus (donc déjà fusionné si une
+        // chute a été détectée), jamais retouchée pendant la session — jamais écrasée par un état
+        // possiblement effondré sans passer par la vérification qui précède.
+        await safeStorageSet(STORAGE_KEY + '_backup', JSON.stringify({ itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: parsed.lastModified||Date.now() }));
       }catch(e){ /* donnée corrompue — état par défaut conservé */ }
     }
     // Ne débloque scheduleSave() qu'une fois le chargement terminé (voir scheduleSave) : évite
@@ -2398,7 +2420,11 @@
       // Push cloud immédiat plutôt que via le délai de 2s habituel : un scan peut prendre du temps, et
       // si l'appli est fermée dès l'apparition du message de fin (avant ces 2s), le push programmé est
       // tué avec l'onglet — sync qui semble "ne plus se faire" alors que le local, lui, est à jour.
-      if(syncCfg){ clearTimeout(cloudPushTimer); await cloudPush(); }
+      // Immédiat (pas le délai habituel de 2s) mais PAS attendu : bloquer ici désactiverait les boutons
+      // jusqu'à 8-24s selon la réponse réseau, sans aucun texte pour l'expliquer — pire que le risque
+      // (petit, et maintenant réduit à l'instant présent plutôt qu'à une fenêtre de 2s) de perdre le
+      // push si l'appli est fermée dans l'instant qui suit.
+      if(syncCfg){ clearTimeout(cloudPushTimer); cloudPush(); }
       renderAll();
       updateScanHead();
 
