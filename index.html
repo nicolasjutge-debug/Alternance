@@ -404,18 +404,6 @@
       </div>
       <div id="syncStatusLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
       <div id="scanCooldownLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
-      <div id="pendingScanIndicator" style="font-size:12px;color:var(--text-dim);margin:-2px 0 8px;"></div>
-      <details id="groupSelectDetails" style="margin:-2px 0 8px;">
-        <summary style="cursor:pointer;font-size:12.5px;color:var(--text-dim);">🎯 Sélection manuelle par groupe (lancer 1 ou plusieurs recherches précises au lieu du cycle complet)</summary>
-        <div style="padding:8px 2px 4px;">
-          <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">Ciblé :</div>
-          <div id="groupCheckboxesTargeted"></div>
-          <button class="btn ghost" id="launchSelectedTargetedBtn" type="button" style="font-size:12px;padding:6px 10px;margin:6px 0 12px;">▶️ Lancer la sélection (ciblé)</button>
-          <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">Élargi :</div>
-          <div id="groupCheckboxesWide"></div>
-          <button class="btn ghost" id="launchSelectedWideBtn" type="button" style="font-size:12px;padding:6px 10px;margin-top:6px;">▶️ Lancer la sélection (élargi)</button>
-        </div>
-      </details>
       <div class="scan-status" id="scanStatus"></div>
       <div class="scan-links">
         <a href="https://www.aftec.fr/alternance-informatique" target="_blank" rel="noopener noreferrer">🎓 AFTEC — Informatique Rennes</a>
@@ -1106,15 +1094,16 @@
     }
     const cloud = result.data;
     if((cloud.lastModified || 0) > localModified){
-      // FUSIONNE le cloud dans le local au lieu de le remplacer intégralement — corrigé le 02/09/2026.
-      // C'est ce remplacement pur qui est très probablement la cause racine de la toute première perte
-      // de données de ce projet : un cloud "plus récent" par horodatage n'est pas forcément plus
-      // COMPLET (ex. un appareil qui pousse après un incident, ou simplement moins de données que ce
-      // qu'un autre appareil avait accumulé localement sans avoir encore synchronisé). Un timestamp
-      // plus récent ne justifie plus d'écraser ce que cet appareil a de son côté — seulement de le
-      // compléter avec ce que le cloud a en plus (même logique que le bouton Fusionner, réutilisée ici).
-      const summary = await mergeStateData(cloud);
-      setSyncStatus('ok', summary ? `☁️ Données cloud fusionnées — ${summary}.` : '☁️ Synchronisé (rien de nouveau côté cloud).');
+      itemStates       = cloud.itemStates       || {};
+      customListings   = cloud.customListings   || [];
+      customCfa        = cloud.customCfa        || [];
+      customEmployeurs = cloud.customEmployeurs || [];
+      hiddenIds        = cloud.hiddenIds        || [];
+      trash            = cloud.trash            || [];
+      lastScanDate     = cloud.lastScanDate     || null;
+      await safeStorageSet(STORAGE_KEY, JSON.stringify({ itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: cloud.lastModified }));
+      renderAll(); updateScanHead(); updateTrashBadge();
+      setSyncStatus('ok', '☁️ Données cloud plus récentes — dossier mis à jour');
     } else {
       setSyncStatus('ok', '☁️ Synchronisé (données locales déjà à jour)');
       // Pousser local → cloud si local est plus récent
@@ -1208,15 +1197,6 @@
   }
 
   async function loadState(){
-    // Lu AVANT le reste : sert de référence pour la vérification de cohérence ci-dessous. Ne pas lire
-    // le backup APRÈS avoir chargé le principal, sinon la comparaison se ferait contre une copie déjà
-    // écrasée par le tout dernier chargement (voir plus bas pourquoi l'ordre compte ici).
-    let previousBackup = null;
-    try{
-      const backupRes = await safeStorageGet(STORAGE_KEY + '_backup');
-      if(backupRes && backupRes.value) previousBackup = JSON.parse(backupRes.value);
-    }catch(e){ /* pas de backup exploitable — tant pis, pas de comparaison possible */ }
-
     const res = await safeStorageGet(STORAGE_KEY);
     if(res && res.value){
       try{
@@ -1228,24 +1208,10 @@
         hiddenIds = parsed.hiddenIds || [];
         trash = parsed.trash || [];
         lastScanDate = parsed.lastScanDate || null;
-        pendingScanGroups = parsed.pendingScanGroups || { targeted:null, wide:null };
-
-        // Vérification de cohérence (ajoutée le 03/09/2026, suite à une chute inexpliquée 270→16) :
-        // si le dossier tout juste chargé a MOINS DE LA MOITIÉ des annonces que le secours local
-        // précédent (et que celui-ci en avait un nombre significatif), quelque chose s'est effondré
-        // entre les deux derniers chargements — on ne l'affiche pas tel quel, on fusionne le secours
-        // par-dessus pour récupérer ce qui a disparu, plutôt que de propager silencieusement la perte.
-        const prevCount = previousBackup ? (previousBackup.customListings||[]).length : 0;
-        const newCount = customListings.length;
-        if(previousBackup && prevCount > 20 && newCount < prevCount / 2){
-          await mergeStateData(previousBackup);
-          console.warn(`Chute suspecte détectée au chargement (${newCount} contre ${prevCount} dans le secours local) — fusion automatique appliquée.`);
-        }
-
-        // Filet de sécurité : copie du dossier tel que RÉSOLU ci-dessus (donc déjà fusionné si une
-        // chute a été détectée), jamais retouchée pendant la session — jamais écrasée par un état
-        // possiblement effondré sans passer par la vérification qui précède.
-        await safeStorageSet(STORAGE_KEY + '_backup', JSON.stringify({ itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: parsed.lastModified||Date.now() }));
+        // Filet de sécurité : copie du dossier tel que chargé au démarrage, jamais retouchée pendant
+        // la session. Si un pépin vide ou corrompt la sauvegarde principale plus tard, cette copie
+        // permet de retrouver le dossier tel qu'il était à l'ouverture de l'app.
+        safeStorageSet(STORAGE_KEY + '_backup', res.value);
       }catch(e){ /* donnée corrompue — état par défaut conservé */ }
     }
     // Ne débloque scheduleSave() qu'une fois le chargement terminé (voir scheduleSave) : évite
@@ -1267,7 +1233,7 @@
   }
 
   async function persistState(){
-    const payload = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, pendingScanGroups, lastModified: Date.now() };
+    const payload = { itemStates, customListings, customCfa, customEmployeurs, hiddenIds, trash, lastScanDate, lastModified: Date.now() };
     const ok = await safeStorageSet(STORAGE_KEY, JSON.stringify(payload));
     if(ok) flashSaved();
     // Push cloud avec debounce (2s après la sauvegarde locale)
@@ -1983,20 +1949,7 @@
     };
 
     if(response.status===401 || response.status===403) throw new Error('BAD_KEY');
-    if(response.status===413){
-      // Lit le corps de la réponse au lieu de le jeter — utile pour tout futur diagnostic, même si pour
-      // CETTE erreur précise on sait déjà (testé le 02/09/2026) que Groq ne renvoie que le texte HTTP
-      // générique "Request Entity Too Large", sans détail exploitable.
-      let detail = null;
-      try{
-        const body = await response.json();
-        detail = (body && body.error && body.error.message) ? String(body.error.message)
-                : (body && body.message ? String(body.message) : null);
-      }catch(e){ /* corps illisible ou vide */ }
-      const err = new Error('PAYLOAD_TOO_LARGE');
-      err.detail = detail;
-      throw err;
-    }
+    if(response.status===413) throw new Error('PAYLOAD_TOO_LARGE');
     if(response.status===429){
       // Le corps JSON reste lisible même quand les en-têtes de quota sont masqués par CORS, et
       // contient le VRAI délai + la limite précise touchée (jour ou minute) — bien plus fiable
@@ -2064,33 +2017,13 @@
   let scanCooldownUntil = 0; // timestamp ms ; 0 = pas de cooldown actif
   let scanCooldownScope = null; // 'day' | 'minute' | null (origine inconnue) — pour le libellé affiché
   let scanCooldownTimer = null;
-  let scanCooldownMode = null; // 'targeted' | 'wide' | null — quel scan a déclenché CE cooldown, pour la reprise automatique ci-dessous
+  let consecutiveRateLimitHits = 0; // remis à 0 dès qu'un appel Groq réussit ; sert au repli progressif
 
-  // Indicateur factuel de ce que pendingScanGroups contient VRAIMENT — évite d'avoir à deviner depuis
-  // le résultat d'un reclic si la reprise cible bien les bons groupes ou repart de zéro. Appelé au
-  // chargement (attachListeners) et à la fin de chaque scanLive.
-  function updatePendingScanIndicator(){
-    const el = document.getElementById('pendingScanIndicator');
-    if(!el) return;
-    const parts = [];
-    if(pendingScanGroups.targeted && pendingScanGroups.targeted.length) parts.push(`Ciblé : ${pendingScanGroups.targeted.join(', ')}`);
-    if(pendingScanGroups.wide && pendingScanGroups.wide.length) parts.push(`Élargi : ${pendingScanGroups.wide.join(', ')}`);
-    el.textContent = parts.length ? `🔁 En attente de reprise — ${parts.join(' | ')}` : '';
-  }
-  // consecutiveRateLimitHits sert au repli progressif (1min → 3min → 8min → 20min) quand Groq ne donne
-  // aucun délai exploitable. PAS remis à 0 par la réussite d'un appel individuel (testé et invalidé le
-  // 02/09/2026 : avec un scan à plusieurs groupes, un 1er groupe qui passe remet le compteur à 0 juste
-  // avant que le 2e/3e retombe sur la même limite — le délai recalculé repart alors toujours au palier
-  // le plus bas, insuffisant si le vrai quota met plus longtemps à se libérer = "boucle bloquée à
-  // 1min"). Le reset se base sur le temps écoulé depuis le dernier 429 (voir applyRateLimitCooldown).
-  let consecutiveRateLimitHits = 0;
-  let lastRateLimitHitAt = 0;
-
-  // Reprise de scan interrompu : quand un scan s'arrête en cours de route (quota OU groupes en échec
-  // 413/réseau), on retient quelles recherches (par label, stable) restent à faire pour CE mode
-  // ('targeted'/'wide'). Au prochain clic sur le même bouton, on ne relance que celles-là au lieu de
-  // repartir de la première. Persisté (local + cloud, voir loadState/persistState) depuis le 02/09/2026 :
-  // survit à une fermeture/rechargement de l'appli, pas seulement à l'intérieur d'une session continue.
+  // Reprise de scan interrompu : quand un scan s'arrête en cours de route à cause de la limite Groq,
+  // on retient quelles recherches (par label, stable) restent à faire pour CE mode ('targeted'/'wide').
+  // Au prochain clic sur le même bouton, on ne relance que celles-là au lieu de repartir de la
+  // première — qui, elle, a déjà consommé un appel pour rien la fois précédente. Volontairement en
+  // mémoire seulement (comme scanCooldownUntil) : repart de zéro si la page est rechargée.
   let pendingScanGroups = { targeted:null, wide:null };
 
   function applyScanCooldown(ms, scope){
@@ -2114,13 +2047,6 @@
     if(!cooling){
       scanCooldownUntil = 0; scanCooldownScope = null;
       if(label) label.textContent = '';
-      // Reprise automatique : si ce cooldown venait d'un scan et qu'il reste des groupes en attente
-      // pour ce mode, on relance tout seul — pas besoin de revenir cliquer manuellement après l'attente.
-      const modeToResume = scanCooldownMode;
-      scanCooldownMode = null;
-      if(modeToResume && pendingScanGroups[modeToResume] && pendingScanGroups[modeToResume].length){
-        setTimeout(()=>{ scanLive(modeToResume); }, 300);
-      }
       return;
     }
     if(label){
@@ -2140,12 +2066,7 @@
   // entre les 3 recherches, donc le cooldown doit démarrer immédiatement dans les deux cas, pas
   // seulement quand handleGroqError est appelé pour un échec total.
   function applyRateLimitCooldown(err){
-    const now = Date.now();
-    // Plus de 5 min depuis le dernier 429 : nouvel incident, pas la suite du précédent — repart du
-    // palier le plus bas. En dessous de 5 min : ça continue d'escalader.
-    if(now - lastRateLimitHitAt > 5*60*1000) consecutiveRateLimitHits = 0;
     consecutiveRateLimitHits++;
-    lastRateLimitHitAt = now;
     const detail = err && err.detail;
     let waitMs = (detail && detail.waitMs) || lastGroqRateInfo.retryAfterMs || lastGroqRateInfo.resetRequestsMs;
     const scope = (detail && detail.scope) || null;
@@ -2171,8 +2092,7 @@
       statusEl.textContent = "⚠️ Clé API Groq refusée — vérifie qu'elle est correcte (ou régénère-la sur console.groq.com/keys), puis réessaie.";
       openKeyModal();
     }else if(err && err.message==='PAYLOAD_TOO_LARGE'){
-      const detailTxt = err.detail ? ` — Groq dit : "${err.detail}"` : '';
-      statusEl.textContent = `⚠️ Requête trop volumineuse pour Groq (413)${ctxTxt}${detailTxt}. Réessaie avec moins d'annonces à la fois.`;
+      statusEl.textContent = `⚠️ Requête trop volumineuse pour Groq (413)${ctxTxt}. Réessaie avec moins d'annonces à la fois.`;
     }else if(err && err.message==='RATE_LIMIT'){
       // precomputedCooldown : passé par scanLive quand le cooldown a déjà été démarré pendant la boucle
       // (dès qu'UN groupe est rate-limited) — évite de rappeler applyRateLimitCooldown une 2e fois pour
@@ -2190,38 +2110,7 @@
     }
   }
 
-  // Prompts volontairement courts + 2 sources max par appel.
-  // compound-mini ne peut utiliser qu'un seul outil de recherche par requête,
-  // et chaque page récupérée grossit le contexte interne → 413 au-delà d'un certain seuil.
-  // 6 petits appels ciblés valent mieux que 3 gros qui échouent tous.
-  // Extraits au niveau module (au lieu d'être locaux à scanLive) pour être lisibles par l'UI de
-  // sélection manuelle par groupe (voir populateGroupCheckboxes) sans dupliquer les libellés.
-  const HD = `alternance informatique Rennes (35) ou ≤1h, rentrée 2027. Exclure commercial/vente — postes techniques uniquement (réseaux, systèmes, support, sécurité). Lister sans vérifier les liens.`;
-  const BAC = `Cherche BTS SIO SISR ou technicien réseau/systèmes/support. Profil Bac STI2D.`;
-  const TARGETED_GROUPS = [
-    { label:'CFA (AFTEC/MyDigital)',       body:`Offres ${HD} ${BAC} Sources : AFTEC, MyDigitalSchool.` },
-    { label:'CFA (ESNA/CMA Bruz)',          body:`Offres ${HD} ${BAC} Sources : ESNA Rennes, CMA Bruz.` },
-    { label:'Jobboards (Hellowork/Indeed)', body:`Offres ${HD} ${BAC} Sources : Hellowork, Indeed.` },
-    { label:'Jobboards (LinkedIn/LABN)',    body:`Offres ${HD} ${BAC} Sources : LinkedIn, labonnealternance.gouv.fr.` },
-    { label:'Employeurs (SNCF/ACCEIS)',     body:`Offres ${HD} ${BAC} Sources : SNCF, ACCEIS Rennes.` },
-    { label:'Employeurs (Nomios/Axido)',    body:`Offres ${HD} ${BAC} Sources : Nomios, Axido.` },
-  ];
-  // Scan large aligné le 02/09/2026 sur le même principe que le ciblé (confirmé fonctionnel à
-  // 2 sources/appel, alors que 3 groupes plus larges par niveau échouaient encore en 413) : au lieu
-  // d'une recherche complètement libre par niveau, chaque niveau est maintenant scindé en 2 appels
-  // nommant chacun 2 sites généralistes concrets — l'esprit "découverte de CFA/employeurs inconnus"
-  // est gardé via la consigne explicite, mais la recherche elle-même a une cible technique aussi
-  // étroite que le ciblé.
-  const WIDE_GROUPS = [
-    { label:'BTS/Technicien (Indeed/LinkedIn)',              body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
-    { label:'BTS/Technicien (France Travail/Studyrama)',     body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Sources : France Travail, Studyrama. Priorise CFA/employeurs inconnus du dossier.` },
-    { label:'Bachelor/Licence Pro (Indeed/LinkedIn)',        body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
-    { label:'Bachelor/Licence Pro (France Travail/Diplomeo)',body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Sources : France Travail, Diplomeo. Priorise CFA/employeurs inconnus du dossier.` },
-    { label:'Master cyber (Indeed/LinkedIn)',                body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
-    { label:'Master cyber (France Travail/Diplomeo)',        body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Sources : France Travail, Diplomeo. Priorise CFA/employeurs inconnus du dossier.` },
-  ];
-
-  async function scanLive(mode = 'targeted', explicitLabels = null){
+  async function scanLive(mode = 'targeted'){
     if(scanCooldownUntil > Date.now()){
       const statusEl = document.getElementById('scanStatus');
       statusEl.className = 'scan-status err';
@@ -2274,28 +2163,46 @@
       return `${knownStr ? `\n\nConnu:\n${knownStr}` : ''}\n\nJSON seul:[{${keys}}]. Max 2. Si rien:[].`;
     }
 
-    const fullGroups = mode === 'wide' ? WIDE_GROUPS : TARGETED_GROUPS;
+    // Prompts volontairement courts + 2 sources max par appel.
+    // compound-mini ne peut utiliser qu'un seul outil de recherche par requête,
+    // et chaque page récupérée grossit le contexte interne → 413 au-delà d'un certain seuil.
+    // 6 petits appels ciblés valent mieux que 3 gros qui échouent tous.
+    const HD = `alternance informatique Rennes (35) ou ≤1h, rentrée 2027. Exclure commercial/vente — postes techniques uniquement (réseaux, systèmes, support, sécurité). Lister sans vérifier les liens.`;
+    const BAC = `Cherche BTS SIO SISR ou technicien réseau/systèmes/support. Profil Bac STI2D.`;
+    const targetedGroups = [
+      { label:'CFA (AFTEC/MyDigital)',       body:`Offres ${HD} ${BAC} Sources : AFTEC, MyDigitalSchool.` },
+      { label:'CFA (ESNA/CMA Bruz)',          body:`Offres ${HD} ${BAC} Sources : ESNA Rennes, CMA Bruz.` },
+      { label:'Jobboards (Hellowork/Indeed)', body:`Offres ${HD} ${BAC} Sources : Hellowork, Indeed.` },
+      { label:'Jobboards (LinkedIn/LABN)',    body:`Offres ${HD} ${BAC} Sources : LinkedIn, labonnealternance.gouv.fr.` },
+      { label:'Employeurs (SNCF/ACCEIS)',     body:`Offres ${HD} ${BAC} Sources : SNCF, ACCEIS Rennes.` },
+      { label:'Employeurs (Nomios/Axido)',    body:`Offres ${HD} ${BAC} Sources : Nomios, Axido.` },
+    ];
+    // Scan large aligné le 02/09/2026 sur le même principe que le ciblé (confirmé fonctionnel à
+    // 2 sources/appel, alors que 3 groupes plus larges par niveau échouaient encore en 413) : au lieu
+    // d'une recherche complètement libre par niveau, chaque niveau est maintenant scindé en 2 appels
+    // nommant chacun 2 sites généralistes concrets — l'esprit "découverte de CFA/employeurs inconnus"
+    // est gardé via la consigne explicite, mais la recherche elle-même a une cible technique aussi
+    // étroite que le ciblé.
+    const wideGroups = [
+      { label:'BTS/Technicien (Indeed/LinkedIn)',              body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
+      { label:'BTS/Technicien (France Travail/Studyrama)',     body:`Cherche offres ${HD} BTS SIO SISR accessible Bac, ou technicien réseau/systèmes/support. Sources : France Travail, Studyrama. Priorise CFA/employeurs inconnus du dossier.` },
+      { label:'Bachelor/Licence Pro (Indeed/LinkedIn)',        body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
+      { label:'Bachelor/Licence Pro (France Travail/Diplomeo)',body:`Cherche offres ${HD} Bachelor ou Licence Pro cybersécurité/informatique (Bac+3). Sources : France Travail, Diplomeo. Priorise CFA/employeurs inconnus du dossier.` },
+      { label:'Master cyber (Indeed/LinkedIn)',                body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Sources : Indeed, LinkedIn. Priorise CFA/employeurs inconnus du dossier.` },
+      { label:'Master cyber (France Travail/Diplomeo)',        body:`Cherche offres ${HD} Master cybersécurité (Bac+5). Sources : France Travail, Diplomeo. Priorise CFA/employeurs inconnus du dossier.` },
+    ];
+    const fullGroups = mode === 'wide' ? wideGroups : targetedGroups;
     // foot calculé dynamiquement avant chaque appel (cf. buildFoot + sessionFoundListings)
 
-    // Sélection des groupes à exécuter, par ordre de priorité :
-    // 1) sélection manuelle explicite (UI "Sélection par groupe") si fournie et non vide
-    // 2) reprise automatique (pendingScanGroups) si un scan précédent s'est arrêté en cours de route
-    // 3) sinon, la liste complète
-    // Garde-fou : si les labels ne correspondent plus à rien (cas normalement impossible en usage
-    // normal), on repart de la liste complète plutôt que de ne rien tenter.
-    let groups;
-    if(explicitLabels && explicitLabels.length){
-      groups = fullGroups.filter(g => explicitLabels.includes(g.label));
-    }else{
-      groups = pendingScanGroups[mode] ? fullGroups.filter(g => pendingScanGroups[mode].includes(g.label)) : fullGroups;
-    }
+    // Reprise : si un scan précédent sur ce même mode s'est arrêté en cours de route (limite Groq),
+    // on ne relance que les recherches restantes (garde-fou : si les labels ne correspondent plus à
+    // rien — cas normalement impossible en session normale — on repart de la liste complète plutôt
+    // que de ne rien tenter).
+    let groups = pendingScanGroups[mode] ? fullGroups.filter(g => pendingScanGroups[mode].includes(g.label)) : fullGroups;
     if(groups.length === 0) groups = fullGroups;
     const alreadyDoneCount = fullGroups.length - groups.length;
 
     let totalAdded = 0, succeededCount = 0, failedGroups = 0, lastError = null, rateLimited = false, rateLimitCooldownInfo = null;
-    const failedGroupLabels = []; // groupes en échec (413, réseau...) hors quota — retentés en priorité au prochain clic
-    let consecutiveGroupFailures = 0; // remis à 0 à chaque succès — 3 d'affilée = signal d'un vrai souci (connexion/clé), pas juste la variabilité normale du contenu récupéré par Groq
-    let stoppedOnConsecutiveFailures = false;
     // sessionFoundListings : annonces trouvées pendant CE scan. Passées à buildFoot() avant chaque
     // appel suivant → le modèle ne les re-propose pas, même pour un groupe différent.
     const sessionFoundListings = [];
@@ -2311,8 +2218,7 @@
         try{
           const foot = buildFoot(mode === 'wide', sessionFoundListings);
           const text = await callGroqWithSearch(g.body + foot, statusEl);
-          // (pas de reset de consecutiveRateLimitHits ici — voir sa déclaration plus haut)
-          consecutiveGroupFailures = 0; // un succès casse la série d'échecs
+          consecutiveRateLimitHits = 0; // reset : cet appel a réussi
           succeededCount++;
           const found = extractJsonArray(text);
 
@@ -2364,7 +2270,7 @@
           }
 
           // Affichage progressif : dès que ce groupe a trouvé quelque chose, ça apparaît à l'écran tout
-          // de suite (les données étaient déjà sauvegardées groupe par groupe via scheduleSave() plus
+          // de suite (les données étaient déjà sauvegardées groupe par groupe via persistState() plus
           // bas, mais l'écran, lui, n'était rafraîchi qu'à la toute fin du scan complet).
           if(totalAdded > 0){ renderAll(); updateScanHead(); }
 
@@ -2372,7 +2278,6 @@
             const remaining = groups.slice(gi+1).map(x=>x.label);
             pendingScanGroups[mode] = remaining.length ? remaining : null; // ce groupe-ci a abouti, on ne le refera pas
             applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
-            scanCooldownMode = mode;
             rateLimited = true;
             break; // quota déjà à 0 : inutile d'insister sur les groupes suivants
           }
@@ -2382,49 +2287,22 @@
           if(err && err.message==='RATE_LIMIT'){
             pendingScanGroups[mode] = groups.slice(gi).map(x=>x.label); // ce groupe-ci n'a PAS abouti, on le refera en premier la prochaine fois
             rateLimitCooldownInfo = applyRateLimitCooldown(err); // démarre le cooldown/compte à rebours tout de suite (capturé pour éviter un 2e calcul si handleGroqError est aussi appelé en fin de scan)
-            scanCooldownMode = mode;
             rateLimited = true;
             break;
           }
           // sinon (413, réseau...) : les groupes suivants sont plus petits et pas forcément touchés par
-          // la même limite, donc on continue au lieu d'abandonner tout le scan — mais on retient lequel
-          // a échoué pour le retenter en priorité au prochain clic (voir plus bas).
-          failedGroupLabels.push(g.label);
-          consecutiveGroupFailures++;
-          if(consecutiveGroupFailures >= 3){
-            // 3 échecs D'AFFILÉE (pas juste 3 au total) : la variabilité normale du contenu récupéré par
-            // Groq ne produit pas ça — c'est le signe d'un vrai souci qui persiste (connexion, clé), pas
-            // la peine d'insister sur les groupes restants dans l'immédiat. Ils restent en attente pour
-            // le prochain clic (même mécanisme que pour le quota), rien n'est abandonné définitivement.
-            const remainingLabels = groups.slice(gi+1).map(x=>x.label);
-            pendingScanGroups[mode] = [...new Set([...failedGroupLabels, ...remainingLabels])];
-            stoppedOnConsecutiveFailures = true;
-            break;
-          }
+          // la même limite, donc on continue au lieu d'abandonner tout le scan.
         }
-        // await persistState() direct (pas scheduleSave, qui attend 450ms) : pendant un scan, chaque
-        // groupe est déjà naturellement espacé par le temps de l'appel Groq — le délai de scheduleSave
-        // n'apporte rien ici, et crée une fenêtre où fermer l'appli juste après une erreur pourrait
-        // perdre ce qu'un groupe précédent venait de trouver. On attend la sauvegarde AVANT de passer
-        // au groupe suivant, pour que ce soit déjà écrit quoi qu'il arrive ensuite.
+        // persistState() immédiat (pas scheduleSave()) : une rafale de 413 enchaînés rapidement remettait
+        // sans cesse à zéro le minuteur du debounce (450ms de calme requis avant écriture réelle) — un
+        // rechargement ou une mise en arrière-plan mobile pendant cette fenêtre perdait les annonces tout
+        // juste trouvées à ce groupe, et le dossier retombait à ses 16 annonces de base au rechargement.
         await persistState();
       }
-      // Repart de zéro seulement si tout a réussi ; sinon, les groupes en échec (quota OU 413/réseau)
-      // restent prioritaires au prochain clic — un scan à 5/6 échecs ne doit pas revenir à la case
-      // départ, sous peine de ne jamais vraiment retenter les groupes qui posent problème.
-      // (stoppedOnConsecutiveFailures : pendingScanGroups déjà positionné au point d'arrêt, ne pas l'écraser ici)
-      if(!rateLimited && !stoppedOnConsecutiveFailures) pendingScanGroups[mode] = failedGroupLabels.length ? failedGroupLabels : null;
+      if(!rateLimited) pendingScanGroups[mode] = null; // scan allé au bout de la liste (avec ou sans échecs hors-quota) : on repart de zéro la prochaine fois
 
       lastScanDate = new Date().toLocaleDateString('fr-FR');
-      await persistState(); // sauvegarde locale finale (inclut pendingScanGroups mis à jour ci-dessus)
-      // Push cloud immédiat plutôt que via le délai de 2s habituel : un scan peut prendre du temps, et
-      // si l'appli est fermée dès l'apparition du message de fin (avant ces 2s), le push programmé est
-      // tué avec l'onglet — sync qui semble "ne plus se faire" alors que le local, lui, est à jour.
-      // Immédiat (pas le délai habituel de 2s) mais PAS attendu : bloquer ici désactiverait les boutons
-      // jusqu'à 8-24s selon la réponse réseau, sans aucun texte pour l'expliquer — pire que le risque
-      // (petit, et maintenant réduit à l'instant présent plutôt qu'à une fenêtre de 2s) de perdre le
-      // push si l'appli est fermée dans l'instant qui suit.
-      if(syncCfg){ clearTimeout(cloudPushTimer); cloudPush(); }
+      await persistState(); // filet de sécurité final — couvre aussi le groupe qui sort par break juste après avoir trouvé des annonces (son propre persistState() plus haut est alors sauté)
       renderAll();
       updateScanHead();
 
@@ -2448,11 +2326,7 @@
       if(totalAdded > 0){
         statusEl.className = 'scan-status ok';
         statusEl.textContent = `✅ ${totalAdded} nouvelle${totalAdded>1?'s':''} annonce${totalAdded>1?'s':''} trouvée${totalAdded>1?'s':''} et ajoutée${totalAdded>1?'s':''} au dossier`
-          + (succeededGroups<fullGroups.length ? ` (${succeededGroups}/${fullGroups.length} recherches ont abouti — les autres ont échoué, réessaie plus tard pour compléter).` : '.')
-          + (stoppedOnConsecutiveFailures ? ' Arrêté après 3 échecs d\'affilée : vérifie ta connexion avant de relancer le reste.' : '');
-      }else if(stoppedOnConsecutiveFailures){
-        statusEl.className = 'scan-status err';
-        statusEl.textContent = `⚠️ Scan arrêté après 3 échecs d'affilée (${succeededGroups}/${fullGroups.length} recherches abouties avant ça) — ce n'est probablement pas juste la variabilité habituelle. Vérifie ta connexion (ou une extension qui bloquerait api.groq.com), puis relance : ça reprendra là où ça s'est arrêté.`;
+          + (succeededGroups<fullGroups.length ? ` (${succeededGroups}/${fullGroups.length} recherches ont abouti — les autres ont échoué, réessaie plus tard pour compléter).` : '.');
       }else if(succeededGroups === 0){
         handleGroqError(lastError, statusEl, (mode==='wide'?'scan large':'scan ciblé') + ` — ${fullGroups.length} recherches, toutes en échec`, rateLimitCooldownInfo);
       }else if(succeededGroups < fullGroups.length){
@@ -2465,12 +2339,10 @@
 
       if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
         applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
-        scanCooldownMode = mode;
       }
     }finally{
       btn.textContent = originalLabel;
       tickScanCooldown(); // réactive les boutons seulement si aucun cooldown n'est actif
-      updatePendingScanIndicator();
     }
   }
 
@@ -2564,7 +2436,7 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
         }
       }
       batch = sub; // le reste de la fonction traite le lot effectivement interrogé (réduit ou non)
-      // (pas de reset de consecutiveRateLimitHits ici — voir sa déclaration plus haut)
+      consecutiveRateLimitHits = 0; // reset : cet appel a réussi
       const results = extractJsonArray(text);
 
       let nowUnavailable = 0;
@@ -3008,45 +2880,17 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
       }
     });
 
-    // Dédoublonnage par id ET par contenu (entreprise+poste) : deux annonces identiques trouvées lors
-    // de scans différents ont presque toujours des id différents (basés sur l'horodatage de création,
-    // jamais identiques d'une session à l'autre) — un dédoublonnage par id seul les considère donc
-    // TOUJOURS comme nouvelles, même quand c'est la même offre réelle déjà au dossier.
-    function contentKey(x){
-      return `${String(x.entreprise||'').trim().toLowerCase()}|${String(x.poste||'').trim().toLowerCase()}`;
-    }
-    function mergeListings(currentArr, incomingArr){
+    function mergeById(currentArr, incomingArr){
       const ids = new Set(currentArr.filter(x=>x&&x.id).map(x=>x.id));
-      const contentKeys = new Set(currentArr.filter(x=>x&&x.entreprise&&x.poste).map(contentKey));
       let added = 0;
       (incomingArr||[]).forEach(x=>{
-        if(!x || !x.id) return;
-        const alreadyById = ids.has(x.id);
-        const alreadyByContent = x.entreprise && x.poste && contentKeys.has(contentKey(x));
-        if(alreadyById || alreadyByContent) return;
-        currentArr.push(x); ids.add(x.id);
-        if(x.entreprise && x.poste) contentKeys.add(contentKey(x));
-        added++;
+        if(x && x.id && !ids.has(x.id)){ currentArr.push(x); ids.add(x.id); added++; }
       });
       return added;
     }
-    // customCfa/customEmployeurs n'ont PAS de champ id (juste `nom`) — mergeListings (basé id) les
-    // ignorait donc silencieusement à 100% jusqu'ici. Clé de dédoublonnage propre pour ceux-là : nom.
-    function mergeByNom(currentArr, incomingArr){
-      const noms = new Set(currentArr.filter(x=>x&&x.nom).map(x=>String(x.nom).trim().toLowerCase()));
-      let added = 0;
-      (incomingArr||[]).forEach(x=>{
-        if(!x || !x.nom) return;
-        const k = String(x.nom).trim().toLowerCase();
-        if(noms.has(k)) return;
-        currentArr.push(x); noms.add(k);
-        added++;
-      });
-      return added;
-    }
-    const addedListings   = mergeListings(customListings,   data.customListings);
-    const addedCfa        = mergeByNom(customCfa,        data.customCfa);
-    const addedEmployeurs = mergeByNom(customEmployeurs, data.customEmployeurs);
+    const addedListings   = mergeById(customListings,   data.customListings);
+    const addedCfa        = mergeById(customCfa,        data.customCfa);
+    const addedEmployeurs = mergeById(customEmployeurs, data.customEmployeurs);
 
     (data.hiddenIds||[]).forEach(id=>{ if(id && !hiddenIds.includes(id)) hiddenIds.push(id); });
 
@@ -3147,27 +2991,6 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     document.getElementById('scanNowBtn').addEventListener('click', ()=>scanLive('targeted'));
     document.getElementById('scanWideBtn').addEventListener('click', ()=>scanLive('wide'));
     document.getElementById('verifyBtn').addEventListener('click', verifySavedListings);
-
-    // Sélection manuelle par groupe : cases à cocher générées depuis TARGETED_GROUPS/WIDE_GROUPS (pas
-    // de libellés en dur dans le HTML, pour ne jamais désynchroniser l'UI des vrais groupes du scan).
-    function populateGroupCheckboxes(containerId, groupList, cssClass){
-      const container = document.getElementById(containerId);
-      container.innerHTML = groupList.map(g =>
-        `<label style="display:block;font-size:13px;margin:3px 0;"><input type="checkbox" class="${cssClass}" value="${g.label.replace(/"/g,'&quot;')}"> ${g.label}</label>`
-      ).join('');
-    }
-    populateGroupCheckboxes('groupCheckboxesTargeted', TARGETED_GROUPS, 'group-cb-targeted');
-    populateGroupCheckboxes('groupCheckboxesWide', WIDE_GROUPS, 'group-cb-wide');
-    updatePendingScanIndicator();
-
-    function launchSelected(mode, cssClass){
-      const selected = Array.from(document.querySelectorAll(`.${cssClass}:checked`)).map(cb=>cb.value);
-      if(selected.length === 0){ alert('Coche au moins un groupe avant de lancer.'); return; }
-      scanLive(mode, selected);
-    }
-    document.getElementById('launchSelectedTargetedBtn').addEventListener('click', ()=>launchSelected('targeted', 'group-cb-targeted'));
-    document.getElementById('launchSelectedWideBtn').addEventListener('click', ()=>launchSelected('wide', 'group-cb-wide'));
-
     document.getElementById('exportBtn').addEventListener('click', exportCsv);
     document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
     document.getElementById('exportContactsBtn').addEventListener('click', exportContactsZimbra);
