@@ -1972,24 +1972,23 @@
 
   // Enveloppe callGroqOnce avec des ré-essais automatiques.
   // — Coupures réseau transitoires (TypeError) : jusqu'à 2 nouveaux essais, comme avant.
-  // — 413 (PAYLOAD_TOO_LARGE) : UN nouvel essai, ajouté le 02/09/2026. L'hypothèse de départ ("un 413
-  //   resterait en échec au 2e essai comme au 1er") s'est révélée fausse : même un lot à 2 sources,
-  //   confirmé fiable une fois, a fini par échouer aussi. La taille dépend surtout de ce que le modèle
-  //   récupère sur le moment en interne (contenu web variable d'un appel à l'autre), pas seulement de
-  //   notre prompt — donc pas forcément reproductible à l'identique, et un 2e essai a une vraie chance
-  //   de tomber sur un contenu plus léger. Une clé refusée ou un 429 restent, eux, sans nouvel essai.
+  // — 413 (PAYLOAD_TOO_LARGE) : jusqu'à 2 nouveaux essais (même budget que les coupures réseau,
+  //   porté de 1 à 2 le 10/09/2026). La taille dépend surtout de ce que le modèle récupère sur le
+  //   moment en interne (contenu web variable d'un appel à l'autre), pas seulement de notre prompt —
+  //   confirmé : un seul essai supplémentaire aidait (2/6 groupes récupérés au lieu de 1/6) mais pas
+  //   assez souvent, la plupart des groupes retombant sur un 2e contenu encore trop lourd. Une clé
+  //   refusée ou un 429 restent, eux, sans nouvel essai.
   async function callGroqWithSearch(prompt, statusEl){
     const maxAttempts = 3;
-    let payloadRetried = false;
     for(let attempt=1; attempt<=maxAttempts; attempt++){
       try{
         return await callGroqOnce(prompt);
       }catch(e){
-        if(e && e.message==='PAYLOAD_TOO_LARGE' && !payloadRetried){
-          payloadRetried = true;
+        if(e && e.message==='PAYLOAD_TOO_LARGE'){
+          if(attempt===maxAttempts) throw e;
           if(statusEl){
             statusEl.className = 'scan-status';
-            statusEl.textContent = "🔄 Requête trop volumineuse — nouvel essai (le contenu récupéré par Groq varie d'une fois à l'autre)…";
+            statusEl.textContent = `🔄 Requête trop volumineuse — nouvel essai ${attempt}/${maxAttempts-1} (le contenu récupéré par Groq varie d'une fois à l'autre)…`;
           }
           await new Promise(r=>setTimeout(r, 1200));
           continue;
