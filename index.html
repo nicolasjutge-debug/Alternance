@@ -2194,18 +2194,24 @@
     const fullGroups = mode === 'wide' ? wideGroups : targetedGroups;
     // foot calculé dynamiquement avant chaque appel (cf. buildFoot + sessionFoundListings)
 
-    // Reprise : si un scan précédent sur ce même mode s'est arrêté en cours de route (limite Groq),
-    // on ne relance que les recherches restantes (garde-fou : si les labels ne correspondent plus à
+    // Reprise : si un scan précédent sur ce même mode a laissé des recherches en échec (413, limite
+    // Groq, réseau...), on ne relance que celles-là (garde-fou : si les labels ne correspondent plus à
     // rien — cas normalement impossible en session normale — on repart de la liste complète plutôt
     // que de ne rien tenter).
     let groups = pendingScanGroups[mode] ? fullGroups.filter(g => pendingScanGroups[mode].includes(g.label)) : fullGroups;
     if(groups.length === 0) groups = fullGroups;
     const alreadyDoneCount = fullGroups.length - groups.length;
 
-    let totalAdded = 0, succeededCount = 0, failedGroups = 0, lastError = null, rateLimited = false, rateLimitCooldownInfo = null;
+    let totalAdded = 0, succeededCount = 0, failedGroups = 0, lastError = null, rateLimited = false, rateLimitCooldownInfo = null, hadPayloadTooLarge = false;
     // sessionFoundListings : annonces trouvées pendant CE scan. Passées à buildFoot() avant chaque
     // appel suivant → le modèle ne les re-propose pas, même pour un groupe différent.
     const sessionFoundListings = [];
+    // stillPending : labels des groupes qui n'ont PAS abouti dans CE scan, quelle qu'en soit la raison
+    // (413, réseau, ou jamais tentés car le scan s'est arrêté avant). Remplace l'ancien suivi qui ne
+    // mémorisait une reprise QUE sur coupure par limite Groq (429) : un 413 laisse le scan continuer
+    // jusqu'au bout (cf plus bas, "on continue au lieu d'abandonner"), donc rien n'était retenu et le
+    // scan suivant repartait sur les 6 groupes en entier, y compris ceux déjà réussis.
+    const stillPending = [];
     const allNewCfas = [], allNewEmps = [];
     const knownCfaNames = [...CFA_NETWORKS, ...customCfa].map(c=>(c.nom||'').toLowerCase());
     const knownEmpNames = customEmployeurs.map(e=>(e.nom||'').toLowerCase());
@@ -2215,8 +2221,9 @@
         const g = groups[gi];
         const displayPos = fullGroups.indexOf(g) + 1; // position réelle dans le cycle de scan (même en reprise partielle), pour un affichage cohérent avec le message final
         btn.textContent = (mode === 'wide' ? '🌐 ' : '🔎 ') + `Recherche ${displayPos}/${fullGroups.length} (${g.label})…`;
+        let foot; // portée élargie (pas juste dans le try) pour rester lisible dans le catch — diagnostic taille de prompt sur 413
         try{
-          const foot = buildFoot(mode === 'wide', sessionFoundListings);
+          foot = buildFoot(mode === 'wide', sessionFoundListings);
           const text = await callGroqWithSearch(g.body + foot, statusEl);
           consecutiveRateLimitHits = 0; // reset : cet appel a réussi
           succeededCount++;
@@ -2275,8 +2282,7 @@
           if(totalAdded > 0){ renderAll(); updateScanHead(); }
 
           if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
-            const remaining = groups.slice(gi+1).map(x=>x.label);
-            pendingScanGroups[mode] = remaining.length ? remaining : null; // ce groupe-ci a abouti, on ne le refera pas
+            stillPending.push(...groups.slice(gi+1).map(x=>x.label));
             applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
             rateLimited = true;
             break; // quota déjà à 0 : inutile d'insister sur les groupes suivants
@@ -2284,11 +2290,16 @@
         }catch(err){
           failedGroups++;
           lastError = err;
+          stillPending.push(g.label); // ce groupe n'a pas abouti (quelle qu'en soit la raison) — proposé au prochain scan
           if(err && err.message==='RATE_LIMIT'){
-            pendingScanGroups[mode] = groups.slice(gi).map(x=>x.label); // ce groupe-ci n'a PAS abouti, on le refera en premier la prochaine fois
+            stillPending.push(...groups.slice(gi+1).map(x=>x.label)); // + tout ce qui n'a pas encore été tenté
             rateLimitCooldownInfo = applyRateLimitCooldown(err); // démarre le cooldown/compte à rebours tout de suite (capturé pour éviter un 2e calcul si handleGroqError est aussi appelé en fin de scan)
             rateLimited = true;
             break;
+          }
+          if(err && err.message==='PAYLOAD_TOO_LARGE'){
+            hadPayloadTooLarge = true;
+            console.error(`Groq 413 sur "${g.label}" — taille du prompt envoyé : ${(g.body + (foot||'')).length} caractères`);
           }
           // sinon (413, réseau...) : les groupes suivants sont plus petits et pas forcément touchés par
           // la même limite, donc on continue au lieu d'abandonner tout le scan.
@@ -2299,7 +2310,7 @@
         // juste trouvées à ce groupe, et le dossier retombait à ses 16 annonces de base au rechargement.
         await persistState();
       }
-      if(!rateLimited) pendingScanGroups[mode] = null; // scan allé au bout de la liste (avec ou sans échecs hors-quota) : on repart de zéro la prochaine fois
+      pendingScanGroups[mode] = stillPending.length ? stillPending : null; // tout groupe non abouti (413, réseau, rate-limit, ou jamais tenté) est proposé au prochain scan ; vide seulement si tous ont abouti
 
       lastScanDate = new Date().toLocaleDateString('fr-FR');
       await persistState(); // filet de sécurité final — couvre aussi le groupe qui sort par break juste après avoir trouvé des annonces (son propre persistState() plus haut est alors sauté)
@@ -2325,13 +2336,22 @@
       const succeededGroups = alreadyDoneCount + succeededCount;
       if(totalAdded > 0){
         statusEl.className = 'scan-status ok';
-        statusEl.textContent = `✅ ${totalAdded} nouvelle${totalAdded>1?'s':''} annonce${totalAdded>1?'s':''} trouvée${totalAdded>1?'s':''} et ajoutée${totalAdded>1?'s':''} au dossier`
-          + (succeededGroups<fullGroups.length ? ` (${succeededGroups}/${fullGroups.length} recherches ont abouti — les autres ont échoué, réessaie plus tard pour compléter).` : '.');
+        let extra = '.';
+        if(succeededGroups < fullGroups.length){
+          const reason = rateLimited
+            ? 'limite Groq atteinte'
+            : (hadPayloadTooLarge ? 'requêtes trop volumineuses (413) sur les autres' : 'échec sur les autres');
+          extra = ` (${succeededGroups}/${fullGroups.length} recherches ont abouti — ${reason} ; relance le scan pour ne retenter que ceux-là).`;
+        }
+        statusEl.textContent = `✅ ${totalAdded} nouvelle${totalAdded>1?'s':''} annonce${totalAdded>1?'s':''} trouvée${totalAdded>1?'s':''} et ajoutée${totalAdded>1?'s':''} au dossier` + extra;
       }else if(succeededGroups === 0){
         handleGroqError(lastError, statusEl, (mode==='wide'?'scan large':'scan ciblé') + ` — ${fullGroups.length} recherches, toutes en échec`, rateLimitCooldownInfo);
       }else if(succeededGroups < fullGroups.length){
         statusEl.className = 'scan-status err';
-        statusEl.textContent = `⚠️ Scan partiel : ${succeededGroups}/${fullGroups.length} recherches ont abouti (aucune nouvelle annonce dessus) ${rateLimited ? '— limite Groq atteinte en cours de route.' : '— les autres ont échoué, réessaie plus tard.'}`;
+        const reason = rateLimited
+          ? 'limite Groq atteinte en cours de route'
+          : (hadPayloadTooLarge ? 'requêtes trop volumineuses (413) sur les autres' : 'les autres ont échoué');
+        statusEl.textContent = `⚠️ Scan partiel : ${succeededGroups}/${fullGroups.length} recherches ont abouti (aucune nouvelle annonce dessus) — ${reason} ; relance le scan pour ne retenter que ceux-là.`;
       }else{
         statusEl.className = 'scan-status ok';
         statusEl.textContent = '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier, ou la recherche a pris trop de temps : réessaie si besoin).';
