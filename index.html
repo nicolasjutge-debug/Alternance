@@ -585,6 +585,7 @@
   <div class="modal">
     <h3>☁️ Synchronisation entre appareils</h3>
     <div class="modal-sub">Utilise <a href="https://jsonbin.io" target="_blank" rel="noopener noreferrer">JSONBin.io</a> (compte gratuit) comme cloud partagé entre iPhone et PC. Crée un compte, copie ta <b>Master Key</b>, laisse le champ Bin ID vide — l'app le crée automatiquement. Sur les autres appareils, entre la même clé + le même Bin ID.</div>
+    <div id="syncCopyRow" style="display:none;font-size:12.5px;margin:-4px 0 2px;"><a href="#" id="copySyncCfgLink">📋 Copier ma config (clé + Bin ID) pour la coller sur un autre appareil</a></div>
     <div class="field"><label>Master Key JSONBin <small style="font-weight:400;color:var(--text-faint);">(commence par $2a$)</small></label><input id="f-sync-key" type="password" autocomplete="off" spellcheck="false" placeholder="$2a$10$..."></div>
     <div class="field"><label>Bin ID <small style="font-weight:400;color:var(--text-faint);">(laisser vide pour en créer un nouveau automatiquement)</small></label><input id="f-sync-bin" autocomplete="off" spellcheck="false" placeholder="64f3a1b2c5d6e7f8…"></div>
     <div id="syncModalStatus" style="font-size:12.5px;min-height:18px;margin-top:-4px;"></div>
@@ -1116,7 +1117,26 @@
     document.getElementById('f-sync-key').value = syncCfg ? syncCfg.apiKey : '';
     document.getElementById('f-sync-bin').value = syncCfg ? syncCfg.binId  : '';
     document.getElementById('syncModalStatus').textContent = '';
+    // Le lien de copie n'a de sens QUE sur l'appareil où la synchro est déjà connectée. Le champ
+    // Master Key est bien pré-rempli ci-dessus, mais reste affiché en pastilles (type=password) —
+    // sans ce lien, en extraire la vraie valeur pour la coller sur un 2e appareil n'est pas évident.
+    const copyRow = document.getElementById('syncCopyRow');
+    if(copyRow) copyRow.style.display = syncCfg ? 'block' : 'none';
     document.getElementById('syncModalOverlay').classList.add('open');
+  }
+  async function copySyncCfg(){
+    if(!syncCfg) return;
+    const text = `Master Key: ${syncCfg.apiKey}\nBin ID: ${syncCfg.binId}`;
+    const statusEl = document.getElementById('syncModalStatus');
+    try{
+      await navigator.clipboard.writeText(text);
+      statusEl.style.color = 'var(--green)';
+      statusEl.textContent = "📋 Copié — colle-le dans les mêmes champs sur l'autre appareil (note-le ou envoie-toi le texte).";
+    }catch(e){
+      // Presse-papiers indisponible (contexte non sécurisé, permission refusée...) : repli sur une
+      // boîte de dialogue au texte sélectionnable manuellement, qui fonctionne partout.
+      window.prompt('Presse-papiers indisponible — sélectionne et copie ce texte manuellement :', text);
+    }
   }
   function closeSyncModal(){ document.getElementById('syncModalOverlay').classList.remove('open'); }
   // Teste l'accès à un bin JSONBin avec re-essais : juste après la création d'un bin, JSONBin peut
@@ -3035,6 +3055,7 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
     document.getElementById('trashModalOverlay').addEventListener('click', e=>{ if(e.target.id==='trashModalOverlay') closeTrashModal(); });
 
     document.getElementById('syncBtn').addEventListener('click', openSyncModal);
+    document.getElementById('copySyncCfgLink').addEventListener('click', e=>{ e.preventDefault(); copySyncCfg(); });
     document.getElementById('cancelSync').addEventListener('click', closeSyncModal);
     document.getElementById('confirmSync').addEventListener('click', confirmSyncConnect);
     document.getElementById('clearSync').addEventListener('click', clearSyncConfig);
