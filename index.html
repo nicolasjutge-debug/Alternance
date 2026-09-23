@@ -1867,8 +1867,8 @@
     document.getElementById('f-groq-key').value = '';
   }
 
-  /* ============ SCAN LIVE (vrai appel web via l'API Groq — modèle groq/compound-mini, recherche web
-     intégrée — fonctionne partout : fichier téléchargé, GitHub Pages, PWA, sans dépendre de Claude.ai) ============ */
+  /* ============ SCAN LIVE (vrai appel web via l'API Groq — modèle openai/gpt-oss-20b + outil intégré
+     browser_search — fonctionne partout : fichier téléchargé, GitHub Pages, PWA, sans dépendre de Claude.ai) ============ */
   function extractJsonArray(text){
     const raw = String(text||'').trim();
     if(!raw) return [];
@@ -1938,14 +1938,21 @@
     return `${s}s`;
   }
 
-  // compound-beta gère la recherche web en interne et renvoie le texte final en une seule
-  // requête sans paramètre extra — pas besoin de boucle multi-tours.
+  // groq/compound-mini gérait la recherche web en interne (réponse finale en un seul appel, sans
+  // paramètre supplémentaire) — mais Groq a définitivement décommissionné groq/compound ET
+  // groq/compound-mini le 21/09/2026 (annoncé le 24/08/2026, sans remplacement direct listé sur
+  // console.groq.com/docs/deprecations). Depuis cette date, tout appel à "groq/compound-mini" échoue
+  // avec une erreur HTTP 404 "model_not_found" — c'est ce 404 précis qui remontait dans le statut du
+  // scan/vérification ⚠️ ("L'appel a échoué (HTTP_404)").
+  // Remplacement (23/09/2026) : modèle "openai/gpt-oss-20b" (équivalent léger/rapide, dans le même
+  // esprit que compound-mini face à compound) + l'outil intégré "browser_search" — recherche web
+  // interactive exécutée côté serveur Groq, toujours en un seul aller-retour (cf.
+  // console.groq.com/docs/tool-use/built-in-tools/browser-search). tool_choice:"required" force une
+  // vraie recherche à chaque appel (sinon le modèle peut répondre de mémoire sans rien vérifier en
+  // ligne). gpt-oss-20b est un modèle de raisonnement : reasoning_effort:"low" limite les tokens de
+  // "réflexion" interne (non affichés) pour garder le scan rapide, et max_completion_tokens est monté
+  // en conséquence — ces tokens de raisonnement partagent le même budget que la réponse finale.
   async function callGroqOnce(prompt){
-    // groq/compound-mini = identifiant ACTUEL du modèle chez Groq (recherche web intégrée, version
-    // légère). Avant le 30/08/2026 le code appelait "compound-beta-mini" (ancien nom, sans préfixe
-    // "groq/") : Groq a réorganisé son catalogue et cet ancien identifiant déclenchait des 413
-    // (Payload Too Large) de façon quasi systématique, quel que soit le prompt envoyé — cohérent avec
-    // le fait que ça touchait aussi bien le scan que la vérification (6 lignes à peine).
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -1953,10 +1960,13 @@
         "Authorization": "Bearer " + groqApiKey
       },
       body: JSON.stringify({
-        model: "groq/compound-mini",
+        model: "openai/gpt-oss-20b",
         messages: [{ role:"user", content: prompt }],
         temperature: 0.3,
-        max_tokens: 1024
+        max_completion_tokens: 2048,
+        reasoning_effort: "low",
+        tool_choice: "required",
+        tools: [{ type: "browser_search" }]
       })
     });
 
@@ -2161,9 +2171,11 @@
     //   (les nouvelles annonces trouvées au fil du scan s'ajoutent avant l'appel suivant,
     //   ce qui évite les doublons inter-groupes sans gonfler le prompt).
     // — La déduplication JS (isDup) reste la barrière principale ; ce pied est un filtre
-    //   "best-effort" pour éviter que compound-mini retourne des annonces inutiles.
-    // — Clé du correctif 413 : compound-mini ajoute en interne un system-prompt d'orchestration
-    //   + le contenu des pages web récupérées. Le budget token total explose vite.
+    //   "best-effort" pour éviter que le modèle retourne des annonces inutiles.
+    // — Clé du correctif 413 (constaté avec l'ex-modèle groq/compound-mini, remplacé le 23/09/2026
+    //   par openai/gpt-oss-20b + browser_search — à réévaluer si les 413 réapparaissent) : le modèle
+    //   ajoute en interne un system-prompt d'orchestration + le contenu des pages web récupérées.
+    //   Le budget token total explose vite.
     //   Solution 1 (ce pied) : prompt utilisateur le plus court possible.
     //   Solution 2 (groupes ci-dessous) : 2 sources max par appel au lieu de 4-5.
     function buildFoot(isWide, sessionFound){
@@ -2182,9 +2194,11 @@
       return `${knownStr ? `\n\nConnu:\n${knownStr}` : ''}\n\nJSON seul:[{${keys}}]. Max 2. Si rien:[].`;
     }
 
-    // Prompts volontairement courts + 2 sources max par appel.
-    // compound-mini ne peut utiliser qu'un seul outil de recherche par requête,
-    // et chaque page récupérée grossit le contexte interne → 413 au-delà d'un certain seuil.
+    // Prompts volontairement courts + 2 sources max par appel (hérité de l'ex-modèle
+    // groq/compound-mini, qui ne pouvait utiliser qu'un seul outil de recherche par requête et
+    // voyait son contexte interne grossir vite → 413 au-delà d'un certain seuil ; le nouveau modèle
+    // openai/gpt-oss-20b + browser_search n'a pas encore été testé en charge, ce découpage prudent
+    // est donc conservé pour l'instant).
     // 6 petits appels ciblés valent mieux que 3 gros qui échouent tous.
     const HD = `alternance informatique Rennes (35) ou ≤1h, rentrée 2027. Exclure commercial/vente — postes techniques uniquement (réseaux, systèmes, support, sécurité). Lister sans vérifier les liens.`;
     const BAC = `Cherche BTS SIO SISR ou technicien réseau/systèmes/support. Profil Bac STI2D.`;
