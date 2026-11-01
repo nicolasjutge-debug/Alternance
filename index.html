@@ -404,6 +404,7 @@
       </div>
       <div id="syncStatusLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
       <div id="scanCooldownLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
+      <button class="btn ghost" id="scanAutoStopBtn" type="button" style="display:none;margin:0 0 10px;">⏹ Arrêter la reprise automatique</button>
       <div class="scan-status" id="scanStatus"></div>
       <div class="scan-links">
         <a href="https://www.aftec.fr/alternance-informatique" target="_blank" rel="noopener noreferrer">🎓 AFTEC — Informatique Rennes</a>
@@ -2055,6 +2056,32 @@
   // mémoire seulement (comme scanCooldownUntil) : repart de zéro si la page est rechargée.
   let pendingScanGroups = { targeted:null, wide:null };
 
+  /* ---- Reprise automatique : quand la limite Groq coupe un scan, il repart tout seul à la fin du compte
+     à rebours (uniquement les recherches restantes, cf. pendingScanGroups) jusqu'à ce que toutes aient abouti. ---- */
+  let autoScan = null; // { mode, added, runs, idle, armed, done, total } tant qu'une chaîne de scan est active
+  const AUTO_SCAN_MAX_IDLE = 8; // reprises d'affilée sans AUCUNE recherche aboutie avant d'abandonner (évite une boucle infinie)
+  function updateAutoScanUi(){
+    const b = document.getElementById('scanAutoStopBtn');
+    if(b) b.style.display = (autoScan && autoScan.armed) ? '' : 'none';
+  }
+  function stopAutoScan(msg){
+    const wasArmed = !!(autoScan && autoScan.armed);
+    autoScan = null;
+    updateAutoScanUi();
+    tickScanCooldown();
+    if(msg && wasArmed){
+      const st = document.getElementById('scanStatus');
+      st.className = 'scan-status err'; st.textContent = msg;
+    }
+  }
+  function resumeAutoScan(){
+    const a = autoScan;
+    if(!a || !a.armed) return;
+    a.armed = false; a.runs++;
+    updateAutoScanUi();
+    scanLive(a.mode, true);
+  }
+
   function applyScanCooldown(ms, scope){
     if(!ms || ms<=0) return;
     const until = Date.now() + ms;
@@ -2076,11 +2103,14 @@
     if(!cooling){
       scanCooldownUntil = 0; scanCooldownScope = null;
       if(label) label.textContent = '';
+      if(autoScan && autoScan.armed) resumeAutoScan(); // fin du compte à rebours : le scan repart tout seul
       return;
     }
     if(label){
       const scopeTxt = scanCooldownScope==='day' ? ' — quota JOURNALIER Groq' : (scanCooldownScope==='minute' ? ' — limite par minute' : '');
-      label.textContent = `⏱️ Prochain scan possible dans ${fmtDurationFr(remaining)} (limite Groq${scopeTxt})`;
+      label.textContent = (autoScan && autoScan.armed)
+        ? `🔁 Reprise automatique du scan dans ${fmtDurationFr(remaining)} — ${autoScan.done}/${autoScan.total} recherches déjà faites (limite Groq${scopeTxt}). Garde cette page ouverte.`
+        : `⏱️ Prochain scan possible dans ${fmtDurationFr(remaining)} (limite Groq${scopeTxt})`;
     }
     scanCooldownTimer = setTimeout(tickScanCooldown, 1000);
   }
@@ -2139,7 +2169,7 @@
     }
   }
 
-  async function scanLive(mode = 'targeted'){
+  async function scanLive(mode = 'targeted', isAuto = false){
     if(scanCooldownUntil > Date.now()){
       const statusEl = document.getElementById('scanStatus');
       statusEl.className = 'scan-status err';
@@ -2166,6 +2196,7 @@
     statusEl.className = 'scan-status';
     statusEl.textContent = '';
 
+    if(!isAuto){ autoScan = { mode, added:0, runs:0, idle:0, armed:false, done:0, total:0 }; updateAutoScanUi(); } // départ manuel = nouvelle chaîne de scan
     // buildFoot : pied de prompt calculé dynamiquement à chaque appel.
     // — Limité à 3 entrées du dossier existant + 3 dernières trouvées en session
     //   (les nouvelles annonces trouvées au fil du scan s'ajoutent avant l'appel suivant,
@@ -2392,6 +2423,34 @@
 
       if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
         applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
+      }
+
+      // --- Reprise automatique (limite Groq) : on réarme tant qu'il reste des recherches, on finalise sinon ---
+      if(autoScan && autoScan.mode === mode){
+        autoScan.added += totalAdded;
+        autoScan.done = succeededGroups; autoScan.total = fullGroups.length;
+        const left = pendingScanGroups[mode] || [];
+        const n = autoScan.added, plur = n>1 ? 's' : '';
+        if(rateLimited && left.length){
+          autoScan.idle = succeededCount > 0 ? 0 : autoScan.idle + 1;
+          if(autoScan.idle >= AUTO_SCAN_MAX_IDLE){
+            autoScan = null;
+            statusEl.className = 'scan-status err';
+            statusEl.textContent = `⚠️ Reprise automatique abandonnée après ${AUTO_SCAN_MAX_IDLE} tentatives sans résultat (${succeededGroups}/${fullGroups.length} recherches abouties${n?`, ${n} annonce${plur} ajoutée${plur}`:''}) — relance le scan plus tard.`;
+          }else{
+            autoScan.armed = true;
+            if(scanCooldownUntil - Date.now() < 5000) applyScanCooldown(5000); // garde-fou : jamais de relance immédiate
+            statusEl.className = 'scan-status';
+            statusEl.textContent = `⏳ Limite Groq atteinte — ${succeededGroups}/${fullGroups.length} recherches abouties${n?` (${n} annonce${plur} déjà ajoutée${plur})`:''}. Le scan reprend tout seul à la fin du compte à rebours pour les ${left.length} restante${left.length>1?'s':''}.`;
+          }
+        }else{
+          if(autoScan.runs > 0 && succeededGroups === fullGroups.length){
+            statusEl.className = 'scan-status ok';
+            statusEl.textContent = `✅ Scan terminé — ${succeededGroups}/${fullGroups.length} recherches abouties après ${autoScan.runs} reprise${autoScan.runs>1?'s':''} automatique${autoScan.runs>1?'s':''} : ` + (n ? `${n} nouvelle${plur} annonce${plur} ajoutée${plur} au dossier.` : 'aucune nouvelle annonce (tout est déjà au dossier).');
+          }
+          autoScan = null;
+        }
+        updateAutoScanUi();
       }
     }finally{
       btn.textContent = originalLabel;
@@ -3043,6 +3102,8 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
 
     document.getElementById('scanNowBtn').addEventListener('click', ()=>scanLive('targeted'));
     document.getElementById('scanWideBtn').addEventListener('click', ()=>scanLive('wide'));
+    document.getElementById('scanAutoStopBtn').addEventListener('click', ()=>stopAutoScan('⏹ Reprise automatique arrêtée — relance le scan quand tu veux (les recherches restantes sont mémorisées).'));
+    document.addEventListener('visibilitychange', ()=>{ if(!document.hidden && autoScan && autoScan.armed) tickScanCooldown(); }); // mobile : rattrape le temps passé en arrière-plan
     document.getElementById('verifyBtn').addEventListener('click', verifySavedListings);
     document.getElementById('exportBtn').addEventListener('click', exportCsv);
     document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
