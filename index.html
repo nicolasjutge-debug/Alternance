@@ -394,7 +394,7 @@
       <div class="scan-live-head"><span class="scan-dot"></span><b>Scan web — dernière recherche le <span id="scanHeadDate">18/08/2026</span></b></div>
       <p><b>Dernière recherche manuelle — 18/08/2026 :</b> aucune annonce 2027 encore en ligne (trop tôt). Nouvelles pistes identifiées : <b>ESNA Rennes/Bruz</b> (BTS SIO SISR apprentissage, accessible Bac STI2D, prépa cyber intégrée) et <b>CMA Formation Bruz</b> (BTS SIO réseaux &amp; cyber, ~15 min de Rennes). Rennes Métropole confirmée cible prioritaire. Entreprises rennaises à cibler en candidature spontanée : ACCEIS, Nomios, SERMA, Axido, ASF Informatique, CYBERDREAM, Cyber Dev, Secure-IC, Airbus CyberSecurity. Conseil : chercher aussi <i>Technicien informatique / systèmes et réseaux / support / infrastructure</i> — c'est là que sont les alternances accessibles après le Bac.</p>
 
-      <p>🔎 <b>Scan IA à la demande :</b> <b>Ciblé</b> = partenaires et employeurs connus à Rennes (BTS SIO SISR + intitulés technicien, accessible Bac). <b>Élargi</b> = recherche libre sur tout le web — nouveaux CFA/employeurs inconnus + formations supérieures (Bachelor, Licence Pro, Master cybersécurité Bac+3→Bac+5) pour le projet long terme de Simon. Clé API Groq gratuite requise — à coller une seule fois via <b>🔑 Clé API</b>.</p>
+      <p>🔎 <b>Scan IA à la demande :</b> <b>Ciblé</b> = partenaires et employeurs connus à Rennes (BTS SIO SISR + intitulés technicien, accessible Bac). <b>Élargi</b> = recherche libre sur tout le web — nouveaux CFA/employeurs inconnus + formations supérieures (Bachelor, Licence Pro, Master cybersécurité Bac+3→Bac+5) pour le projet long terme de Simon. Clé API Groq gratuite requise — à coller une seule fois via <b>🔑 Clé API</b>. Si la limite Groq coupe un scan en route, il <b>reprend tout seul</b> à la fin du compte à rebours, jusqu'à ce que toutes les recherches soient terminées (6/6) — garde la page ouverte.</p>
       <div class="scan-actions">
         <button class="btn primary" id="scanNowBtn" type="button">🔎 Scanner — Ciblé</button>
         <button class="btn secondary" id="scanWideBtn" type="button">🌐 Scanner — Élargi</button>
@@ -404,7 +404,7 @@
       </div>
       <div id="syncStatusLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
       <div id="scanCooldownLabel" style="font-size:12.5px;color:var(--text-dim);margin:-2px 0 8px;min-height:0;"></div>
-      <button class="btn ghost" id="scanAutoStopBtn" type="button" style="display:none;margin:0 0 10px;">⏹ Arrêter la reprise automatique</button>
+      <button class="btn ghost" id="scanAutoCancelBtn" type="button" style="display:none;margin:0 0 8px;padding:6px 12px;font-size:12.5px;">⏹️ Annuler la reprise automatique</button>
       <div class="scan-status" id="scanStatus"></div>
       <div class="scan-links">
         <a href="https://www.aftec.fr/alternance-informatique" target="_blank" rel="noopener noreferrer">🎓 AFTEC — Informatique Rennes</a>
@@ -2056,30 +2056,24 @@
   // mémoire seulement (comme scanCooldownUntil) : repart de zéro si la page est rechargée.
   let pendingScanGroups = { targeted:null, wide:null };
 
-  /* ---- Reprise automatique : quand la limite Groq coupe un scan, il repart tout seul à la fin du compte
-     à rebours (uniquement les recherches restantes, cf. pendingScanGroups) jusqu'à ce que toutes aient abouti. ---- */
-  let autoScan = null; // { mode, added, runs, idle, armed, done, total } tant qu'une chaîne de scan est active
-  const AUTO_SCAN_MAX_IDLE = 8; // reprises d'affilée sans AUCUNE recherche aboutie avant d'abandonner (évite une boucle infinie)
-  function updateAutoScanUi(){
-    const b = document.getElementById('scanAutoStopBtn');
-    if(b) b.style.display = (autoScan && autoScan.armed) ? '' : 'none';
-  }
-  function stopAutoScan(msg){
-    const wasArmed = !!(autoScan && autoScan.armed);
-    autoScan = null;
-    updateAutoScanUi();
-    tickScanCooldown();
-    if(msg && wasArmed){
-      const st = document.getElementById('scanStatus');
-      st.className = 'scan-status err'; st.textContent = msg;
+  // Reprise AUTOMATIQUE après limite Groq (ajoutée le 01/11/2026) : quand un scan s'arrête sur un 429
+  // alors qu'il reste des recherches (ex. 3/6), il se relance tout seul dès la fin du compte à rebours,
+  // et ainsi de suite jusqu'à 6/6. Garde-fous : uniquement sur limite Groq (jamais sur 413/réseau, pour
+  // ne pas boucler sur une erreur persistante), AUTO_RESUME_MAX reprises au plus par scan lancé à la
+  // main, annulable via le bouton sous le compte à rebours. En mémoire seulement (comme le cooldown) :
+  // la page doit rester ouverte.
+  // mode : scan à relancer (null = rien de prévu) · done/total : avancement affiché · count : reprises
+  // déjà faites · added : annonces ajoutées cumulées sur toutes les reprises (message final fidèle).
+  const AUTO_RESUME_MAX = 10;
+  let autoResume = { mode:null, done:0, total:0, count:0, added:0 };
+  function cancelAutoResume(){
+    autoResume = { mode:null, done:0, total:0, count:0, added:0 };
+    const st = document.getElementById('scanStatus');
+    if(st){
+      st.className = 'scan-status';
+      st.textContent = "⏹️ Reprise automatique annulée — relance le scan à la main à la fin du compte à rebours (seules les recherches restantes seront retentées).";
     }
-  }
-  function resumeAutoScan(){
-    const a = autoScan;
-    if(!a || !a.armed) return;
-    a.armed = false; a.runs++;
-    updateAutoScanUi();
-    scanLive(a.mode, true);
+    tickScanCooldown();
   }
 
   function applyScanCooldown(ms, scope){
@@ -2092,6 +2086,7 @@
   function tickScanCooldown(){
     clearTimeout(scanCooldownTimer);
     const label = document.getElementById('scanCooldownLabel');
+    const cancelBtn = document.getElementById('scanAutoCancelBtn');
     const remaining = scanCooldownUntil - Date.now();
     const cooling = remaining > 0;
 
@@ -2103,13 +2098,23 @@
     if(!cooling){
       scanCooldownUntil = 0; scanCooldownScope = null;
       if(label) label.textContent = '';
-      if(autoScan && autoScan.armed) resumeAutoScan(); // fin du compte à rebours : le scan repart tout seul
+      if(cancelBtn) cancelBtn.style.display = 'none';
+      // Reprise automatique : compte à rebours terminé → on relance seul les recherches restantes.
+      // Appel direct (pas de setTimeout) : scanLive bloque les boutons aussitôt, donc aucun clic ne
+      // peut lancer un 2e scan en parallèle entre-temps.
+      if(autoResume.mode){
+        const m = autoResume.mode;
+        autoResume.mode = null;
+        autoResume.count++;
+        scanLive(m, true).catch(e=>console.error('Reprise automatique du scan impossible', e));
+      }
       return;
     }
+    if(cancelBtn) cancelBtn.style.display = autoResume.mode ? '' : 'none';
     if(label){
       const scopeTxt = scanCooldownScope==='day' ? ' — quota JOURNALIER Groq' : (scanCooldownScope==='minute' ? ' — limite par minute' : '');
-      label.textContent = (autoScan && autoScan.armed)
-        ? `🔁 Reprise automatique du scan dans ${fmtDurationFr(remaining)} — ${autoScan.done}/${autoScan.total} recherches déjà faites (limite Groq${scopeTxt}). Garde cette page ouverte.`
+      label.textContent = autoResume.mode
+        ? `🔁 Reprise automatique du scan dans ${fmtDurationFr(remaining)} — ${autoResume.done}/${autoResume.total} recherches terminées (limite Groq${scopeTxt}). Garde cette page ouverte.`
         : `⏱️ Prochain scan possible dans ${fmtDurationFr(remaining)} (limite Groq${scopeTxt})`;
     }
     scanCooldownTimer = setTimeout(tickScanCooldown, 1000);
@@ -2161,7 +2166,7 @@
       const scopeLabel = scope==='day'
         ? ' (quota JOURNALIER Groq atteint)'
         : (scope==='minute' ? ' (limite par minute)' : '');
-      statusEl.textContent = `⚠️ Limite de requêtes Groq atteinte${scopeLabel} — prochain essai possible dans ${estimated?'environ ':''}${waitTxt}${estimated?' (estimation)':''} (compte à rebours sous les boutons).`;
+      statusEl.textContent = `⚠️ Limite de requêtes Groq atteinte${scopeLabel} — prochain essai possible dans ${estimated?'environ ':''}${waitTxt}${estimated?' (estimation)':''} (compte à rebours sous les boutons).${autoResume.mode ? ' Le scan reprendra tout seul à la fin du compte à rebours.' : ''}`;
     }else if(err instanceof TypeError){
       statusEl.textContent = "⚠️ Impossible de joindre l'API Groq (connexion coupée, ou bloquée par le navigateur/l'extension). Vérifie ta connexion et réessaie ; si ça persiste, utilise les liens juste au-dessus en attendant.";
     }else{
@@ -2176,6 +2181,8 @@
       statusEl.textContent = "⏱️ Limite Groq — patiente encore un peu avant de relancer un scan (compte à rebours sous les boutons).";
       return;
     }
+    // Lancement manuel : on repart d'un cycle de reprises automatiques neuf (une reprise auto garde le sien).
+    if(!isAuto) autoResume = { mode:null, done:0, total:0, count:0, added:0 };
     const btn = mode === 'wide' ? document.getElementById('scanWideBtn') : document.getElementById('scanNowBtn');
     const statusEl = document.getElementById('scanStatus');
 
@@ -2196,7 +2203,6 @@
     statusEl.className = 'scan-status';
     statusEl.textContent = '';
 
-    if(!isAuto){ autoScan = { mode, added:0, runs:0, idle:0, armed:false, done:0, total:0 }; updateAutoScanUi(); } // départ manuel = nouvelle chaîne de scan
     // buildFoot : pied de prompt calculé dynamiquement à chaque appel.
     // — Limité à 3 entrées du dossier existant + 3 dernières trouvées en session
     //   (les nouvelles annonces trouvées au fil du scan s'ajoutent avant l'appel suivant,
@@ -2398,16 +2404,32 @@
       // tour précédent comptent aussi, et le dénominateur reste le vrai total du scan (3) au lieu de
       // redevenir 2 puis 1 au fil des reprises.
       const succeededGroups = alreadyDoneCount + succeededCount;
-      if(totalAdded > 0){
+
+      // Reprise automatique (cf. autoResume) : le scan s'est arrêté sur la limite Groq et il reste des
+      // recherches → on programme le relancement, jusqu'à 6/6. Sinon (terminé, 413, réseau, plafond de
+      // reprises atteint) on remet le cycle à zéro et on retombe sur le message de relance manuelle.
+      const cumulativeAdded = autoResume.added + totalAdded; // annonces ajoutées sur toutes les reprises enchaînées
+      const willAutoResume = rateLimited && !!pendingScanGroups[mode] && autoResume.count < AUTO_RESUME_MAX;
+      if(willAutoResume){
+        autoResume.mode = mode; autoResume.added = cumulativeAdded;
+        autoResume.done = succeededGroups; autoResume.total = fullGroups.length;
+        if(scanCooldownUntil > Date.now()) applyScanCooldown(scanCooldownUntil - Date.now() + 2000, scanCooldownScope); // +2 s de marge pour ne pas retomber sur la limite à la seconde près
+      }else{
+        autoResume = { mode:null, done:0, total:0, count:0, added:0 };
+      }
+      const retryTxt = willAutoResume ? 'reprise automatique à la fin du compte à rebours' : 'relance le scan pour ne retenter que ceux-là';
+      const autoDoneTxt = (isAuto && succeededGroups >= fullGroups.length) ? ` Scan complet ${succeededGroups}/${fullGroups.length} après reprise automatique.` : '';
+
+      if(cumulativeAdded > 0){
         statusEl.className = 'scan-status ok';
-        let extra = '.';
+        let extra = '.' + autoDoneTxt;
         if(succeededGroups < fullGroups.length){
           const reason = rateLimited
             ? 'limite Groq atteinte'
             : (hadPayloadTooLarge ? 'requêtes trop volumineuses (413) sur les autres' : 'échec sur les autres');
-          extra = ` (${succeededGroups}/${fullGroups.length} recherches ont abouti — ${reason} ; relance le scan pour ne retenter que ceux-là).`;
+          extra = ` (${succeededGroups}/${fullGroups.length} recherches ont abouti — ${reason} ; ${retryTxt}).`;
         }
-        statusEl.textContent = `✅ ${totalAdded} nouvelle${totalAdded>1?'s':''} annonce${totalAdded>1?'s':''} trouvée${totalAdded>1?'s':''} et ajoutée${totalAdded>1?'s':''} au dossier` + extra;
+        statusEl.textContent = `✅ ${cumulativeAdded} nouvelle${cumulativeAdded>1?'s':''} annonce${cumulativeAdded>1?'s':''} trouvée${cumulativeAdded>1?'s':''} et ajoutée${cumulativeAdded>1?'s':''} au dossier` + extra;
       }else if(succeededGroups === 0){
         handleGroqError(lastError, statusEl, (mode==='wide'?'scan large':'scan ciblé') + ` — ${fullGroups.length} recherches, toutes en échec`, rateLimitCooldownInfo);
       }else if(succeededGroups < fullGroups.length){
@@ -2415,42 +2437,14 @@
         const reason = rateLimited
           ? 'limite Groq atteinte en cours de route'
           : (hadPayloadTooLarge ? 'requêtes trop volumineuses (413) sur les autres' : 'les autres ont échoué');
-        statusEl.textContent = `⚠️ Scan partiel : ${succeededGroups}/${fullGroups.length} recherches ont abouti (aucune nouvelle annonce dessus) — ${reason} ; relance le scan pour ne retenter que ceux-là.`;
+        statusEl.textContent = `⚠️ Scan partiel : ${succeededGroups}/${fullGroups.length} recherches ont abouti (aucune nouvelle annonce dessus) — ${reason} ; ${retryTxt}.`;
       }else{
         statusEl.className = 'scan-status ok';
-        statusEl.textContent = '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier, ou la recherche a pris trop de temps : réessaie si besoin).';
+        statusEl.textContent = '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier, ou la recherche a pris trop de temps : réessaie si besoin).' + autoDoneTxt;
       }
 
       if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
         applyScanCooldown(lastGroqRateInfo.resetRequestsMs);
-      }
-
-      // --- Reprise automatique (limite Groq) : on réarme tant qu'il reste des recherches, on finalise sinon ---
-      if(autoScan && autoScan.mode === mode){
-        autoScan.added += totalAdded;
-        autoScan.done = succeededGroups; autoScan.total = fullGroups.length;
-        const left = pendingScanGroups[mode] || [];
-        const n = autoScan.added, plur = n>1 ? 's' : '';
-        if(rateLimited && left.length){
-          autoScan.idle = succeededCount > 0 ? 0 : autoScan.idle + 1;
-          if(autoScan.idle >= AUTO_SCAN_MAX_IDLE){
-            autoScan = null;
-            statusEl.className = 'scan-status err';
-            statusEl.textContent = `⚠️ Reprise automatique abandonnée après ${AUTO_SCAN_MAX_IDLE} tentatives sans résultat (${succeededGroups}/${fullGroups.length} recherches abouties${n?`, ${n} annonce${plur} ajoutée${plur}`:''}) — relance le scan plus tard.`;
-          }else{
-            autoScan.armed = true;
-            if(scanCooldownUntil - Date.now() < 5000) applyScanCooldown(5000); // garde-fou : jamais de relance immédiate
-            statusEl.className = 'scan-status';
-            statusEl.textContent = `⏳ Limite Groq atteinte — ${succeededGroups}/${fullGroups.length} recherches abouties${n?` (${n} annonce${plur} déjà ajoutée${plur})`:''}. Le scan reprend tout seul à la fin du compte à rebours pour les ${left.length} restante${left.length>1?'s':''}.`;
-          }
-        }else{
-          if(autoScan.runs > 0 && succeededGroups === fullGroups.length){
-            statusEl.className = 'scan-status ok';
-            statusEl.textContent = `✅ Scan terminé — ${succeededGroups}/${fullGroups.length} recherches abouties après ${autoScan.runs} reprise${autoScan.runs>1?'s':''} automatique${autoScan.runs>1?'s':''} : ` + (n ? `${n} nouvelle${plur} annonce${plur} ajoutée${plur} au dossier.` : 'aucune nouvelle annonce (tout est déjà au dossier).');
-          }
-          autoScan = null;
-        }
-        updateAutoScanUi();
       }
     }finally{
       btn.textContent = originalLabel;
@@ -3102,9 +3096,8 @@ Réponds uniquement en JSON, tableau d'objets avec EXACTEMENT les clés : id (re
 
     document.getElementById('scanNowBtn').addEventListener('click', ()=>scanLive('targeted'));
     document.getElementById('scanWideBtn').addEventListener('click', ()=>scanLive('wide'));
-    document.getElementById('scanAutoStopBtn').addEventListener('click', ()=>stopAutoScan('⏹ Reprise automatique arrêtée — relance le scan quand tu veux (les recherches restantes sont mémorisées).'));
-    document.addEventListener('visibilitychange', ()=>{ if(!document.hidden && autoScan && autoScan.armed) tickScanCooldown(); }); // mobile : rattrape le temps passé en arrière-plan
     document.getElementById('verifyBtn').addEventListener('click', verifySavedListings);
+    document.getElementById('scanAutoCancelBtn').addEventListener('click', cancelAutoResume);
     document.getElementById('exportBtn').addEventListener('click', exportCsv);
     document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
     document.getElementById('exportContactsBtn').addEventListener('click', exportContactsZimbra);
