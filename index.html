@@ -1953,7 +1953,7 @@
   // ligne). gpt-oss-20b est un modèle de raisonnement : reasoning_effort:"low" limite les tokens de
   // "réflexion" interne (non affichés) pour garder le scan rapide, et max_completion_tokens est monté
   // en conséquence — ces tokens de raisonnement partagent le même budget que la réponse finale.
-  async function callGroqOnce(prompt, light){
+  async function callGroqOnce(prompt, opts){
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -1961,10 +1961,10 @@
         "Authorization": "Bearer " + groqApiKey
       },
       body: JSON.stringify({
-        model: "openai/gpt-oss-20b",
+        model: (opts && opts.model) || "openai/gpt-oss-20b",
         messages: [{ role:"user", content: prompt }],
         temperature: 0.3,
-        max_completion_tokens: light ? 1400 : 2048, // mode allégé (reprise après 413) : moins de tokens réservés en sortie = plus de marge pour le contexte
+        max_completion_tokens: (opts && opts.light) ? 1400 : 2048, // mode allégé (reprise après 413) : moins de tokens réservés en sortie = plus de marge pour le contexte
         reasoning_effort: "low",
         tool_choice: "required",
         tools: [{ type: "browser_search" }]
@@ -2009,11 +2009,11 @@
   //   confirmé : un seul essai supplémentaire aidait (2/6 groupes récupérés au lieu de 1/6) mais pas
   //   assez souvent, la plupart des groupes retombant sur un 2e contenu encore trop lourd. Une clé
   //   refusée ou un 429 restent, eux, sans nouvel essai.
-  async function callGroqWithSearch(prompt, statusEl, light){
+  async function callGroqWithSearch(prompt, statusEl, opts){
     const maxAttempts = 3;
     for(let attempt=1; attempt<=maxAttempts; attempt++){
       try{
-        return await callGroqOnce(prompt, light);
+        return await callGroqOnce(prompt, opts);
       }catch(e){
         if(e && e.message==='PAYLOAD_TOO_LARGE'){
           if(attempt===maxAttempts) throw e;
@@ -2073,19 +2073,60 @@
   function newAutoResume(){ return { mode:null, reason:null, done:0, total:0, count:0, added:0, stalls:0 }; }
   let autoResume = newAutoResume();
 
-  // Repli adaptatif : un groupe qui échoue en 413 est relancé ensuite SOURCE PAR SOURCE, avec la consigne
-  // « une seule recherche, sans ouvrir de page » et moins de tokens de sortie réservés → le contexte
-  // interne de Groq (ce qui déclenche le 413) devient bien plus petit. splitLabels : groupes à découper ;
-  // subDone : sources déjà abouties ("label|source"), pour ne pas les refaire au tour suivant.
+  // Repli adaptatif (échec "de fond" : 413, erreur HTTP) : la recherche en échec est relancée SOURCE PAR
+  // SOURCE avec la consigne « une seule recherche, sans ouvrir de page » et moins de tokens de sortie →
+  // contexte interne de Groq bien plus petit. Échelle par source : 1) mode allégé, 2) dernier recours =
+  // autre modèle (gpt-oss-120b, quota propre), 3) abandon pour CE cycle : la source est notée « ignorée »
+  // et ne bloque plus le 6/6 (elle sera retentée au cycle suivant). Sans cet abandon, une source qui
+  // échoue à chaque fois gardait le scan bloqué à 5/6 indéfiniment, en automatique comme en manuel.
+  // splitLabels : groupes à découper · subDone : sources abouties ("label|source") · unitFails : tours en
+  // échec par source · skippedUnits : sources abandonnées. Sauvegardé en local (12 h) pour survivre à un
+  // rechargement de la page (iPhone) : sinon un clic manuel après réouverture repartait des 6 recherches.
   const LIGHT_HINT = ' Une seule recherche, sans ouvrir de page.';
+  const MAX_UNIT_FAILS = 2;
+  const FALLBACK_MODEL = 'openai/gpt-oss-120b';
+  const SCAN_RESUME_KEY = STORAGE_KEY + '_scanresume';
   const splitLabels = new Set();
   const subDone = new Set();
+  const skippedUnits = new Set();
+  let unitFails = {};
   function splitGroup(g){
     const m = g.body.match(/Sources : (.+?)\.(?: Priorise|$)/);
     const srcs = m ? m[1].split(', ') : [];
-    if(srcs.length < 2) return [{ ...g, light:true }];
+    if(srcs.length < 2) return [{ label:g.label, sub:'*', light:true, body:g.body }];
     return srcs.map(src => ({ label:g.label, sub:src, light:true, body:g.body.replace('Sources : ' + m[1], 'Source : ' + src) }));
   }
+  function resetLadder(fullGroups){
+    const mine = k => fullGroups.some(g=>k===g.label || k.startsWith(g.label+'|'));
+    fullGroups.forEach(g=>splitLabels.delete(g.label));
+    [...subDone].filter(mine).forEach(k=>subDone.delete(k));
+    [...skippedUnits].filter(mine).forEach(k=>skippedUnits.delete(k));
+    Object.keys(unitFails).filter(mine).forEach(k=>{ delete unitFails[k]; });
+  }
+  function saveScanResume(){
+    return safeStorageSet(SCAN_RESUME_KEY, JSON.stringify({ v:1, savedAt:Date.now(), pending:pendingScanGroups, split:[...splitLabels], done:[...subDone], skipped:[...skippedUnits], fails:unitFails }));
+  }
+  async function loadScanResume(){
+    try{
+      const res = await safeStorageGet(SCAN_RESUME_KEY);
+      const o = res && res.value ? JSON.parse(res.value) : null;
+      if(!o || o.v !== 1 || Date.now() - o.savedAt > 12*3600*1000) return;
+      pendingScanGroups = { targeted:(o.pending && o.pending.targeted) || null, wide:(o.pending && o.pending.wide) || null };
+      (o.split||[]).forEach(k=>splitLabels.add(k));
+      (o.done||[]).forEach(k=>subDone.add(k));
+      (o.skipped||[]).forEach(k=>skippedUnits.add(k));
+      unitFails = o.fails || {};
+      const parts = [];
+      if(pendingScanGroups.targeted) parts.push('ciblé → ' + pendingScanGroups.targeted.join(', '));
+      if(pendingScanGroups.wide) parts.push('élargi → ' + pendingScanGroups.wide.join(', '));
+      const st = document.getElementById('scanStatus');
+      if(st && parts.length && !st.textContent){
+        st.className = 'scan-status';
+        st.textContent = '⏸️ Scan interrompu — le prochain clic ne retentera que les recherches restantes (' + parts.join(' · ') + ').';
+      }
+    }catch(e){ /* état de reprise illisible : on repart d'un cycle neuf */ }
+  }
+  const scanResumeReady = loadScanResume();
   function cancelAutoResume(){
     autoResume = newAutoResume();
     const st = document.getElementById('scanStatus');
@@ -2290,11 +2331,9 @@
     // Groq, réseau...), on ne relance que celles-là (garde-fou : si les labels ne correspondent plus à
     // rien — cas normalement impossible en session normale — on repart de la liste complète plutôt
     // que de ne rien tenter).
+    await scanResumeReady; // l'état de reprise sauvegardé (rechargement de la page) est chargé avant de décider quoi relancer
     // Nouveau cycle (rien en attente) : on repart de zéro sur le repli adaptatif de ce mode.
-    if(!pendingScanGroups[mode]){
-      fullGroups.forEach(g=>splitLabels.delete(g.label));
-      [...subDone].forEach(k=>{ if(fullGroups.some(g=>k.startsWith(g.label+'|'))) subDone.delete(k); });
-    }
+    if(!pendingScanGroups[mode]) resetLadder(fullGroups);
     let groups = pendingScanGroups[mode] ? fullGroups.filter(g => pendingScanGroups[mode].includes(g.label)) : fullGroups;
     if(groups.length === 0) groups = fullGroups;
     const alreadyDoneCount = fullGroups.length - groups.length;
@@ -2303,7 +2342,7 @@
     const items = [];
     groups.forEach(g=>{
       if(!splitLabels.has(g.label)){ items.push(g); return; }
-      splitGroup(g).forEach(it=>{ if(!it.sub || !subDone.has(g.label+'|'+it.sub)) items.push(it); });
+      splitGroup(g).forEach(it=>{ const k = g.label+'|'+it.sub; if(!subDone.has(k) && !skippedUnits.has(k)) items.push(it); });
     });
 
     let totalAdded = 0, succeededCount = 0, failedGroups = 0, lastError = null, rateLimited = false, rateLimitCooldownInfo = null, hadPayloadTooLarge = false;
@@ -2325,10 +2364,12 @@
         const g = items[gi];
         const displayPos = fullGroups.findIndex(x=>x.label===g.label) + 1; // position réelle dans le cycle de scan (même en reprise partielle), pour un affichage cohérent avec le message final
         btn.textContent = (mode === 'wide' ? '🌐 ' : '🔎 ') + `Recherche ${displayPos}/${fullGroups.length} (${g.label}${g.sub ? ' › ' + g.sub : ''})…`;
+        const uKey = g.sub ? g.label+'|'+g.sub : g.label; // clé de suivi de cette recherche (échecs / abandon)
         let foot; // portée élargie (pas juste dans le try) pour rester lisible dans le catch — diagnostic taille de prompt sur 413
         try{
           foot = buildFoot(mode === 'wide', sessionFoundListings);
-          const text = await callGroqWithSearch(g.body + (g.light ? LIGHT_HINT : '') + foot, statusEl, g.light);
+          const uOpts = g.light ? { light:true, model: (unitFails[uKey]||0) >= 1 ? FALLBACK_MODEL : null } : null; // 1er essai allégé : même modèle ; 2e : dernier recours = autre modèle
+          const text = await callGroqWithSearch(g.body + (g.light ? LIGHT_HINT : '') + foot, statusEl, uOpts);
           consecutiveRateLimitHits = 0; // reset : cet appel a réussi
           succeededCount++;
           if(g.sub) subDone.add(g.label+'|'+g.sub);
@@ -2395,7 +2436,17 @@
         }catch(err){
           failedGroups++;
           lastError = err;
-          stillPending.push(g.label); // ce groupe n'a pas abouti (quelle qu'en soit la raison) — proposé au prochain scan
+          // Échec "de fond" (413, erreur HTTP...) : on durcit le traitement de CETTE recherche (découpage par
+          // source, puis autre modèle, puis abandon pour ce cycle). Pas pour une limite Groq (429), une clé
+          // refusée ou une coupure réseau : là, simple nouvel essai tel quel.
+          const hardFail = !(err && (err.message==='RATE_LIMIT' || err.message==='BAD_KEY')) && !(err instanceof TypeError);
+          let abandoned = false;
+          if(hardFail){
+            unitFails[uKey] = (unitFails[uKey]||0) + 1;
+            splitLabels.add(g.label);
+            if(g.sub && unitFails[uKey] >= MAX_UNIT_FAILS){ skippedUnits.add(uKey); abandoned = true; }
+          }
+          if(!abandoned) stillPending.push(g.label); // ce groupe n'a pas abouti — proposé au prochain scan (sauf source abandonnée pour ce cycle)
           if(err && err.message==='RATE_LIMIT'){
             stillPending.push(...items.slice(gi+1).map(x=>x.label)); // + tout ce qui n'a pas encore été tenté
             rateLimitCooldownInfo = applyRateLimitCooldown(err); // démarre le cooldown/compte à rebours tout de suite (capturé pour éviter un 2e calcul si handleGroqError est aussi appelé en fin de scan)
@@ -2404,7 +2455,6 @@
           }
           if(err && err.message==='PAYLOAD_TOO_LARGE'){
             hadPayloadTooLarge = true;
-            splitLabels.add(g.label); // prochain tour : ce groupe sera relancé source par source, en mode allégé
             console.error(`Groq 413 sur "${g.label}" — taille du prompt envoyé : ${(g.body + (foot||'')).length} caractères`);
           }
           // sinon (413, réseau...) : les groupes suivants sont plus petits et pas forcément touchés par
@@ -2419,6 +2469,7 @@
       pendingScanGroups[mode] = stillPending.length ? [...new Set(stillPending)] : null; // tout groupe non abouti (413, réseau, rate-limit, ou jamais tenté) est proposé au prochain scan ; vide seulement si tous ont abouti
 
       lastScanDate = new Date().toLocaleDateString('fr-FR');
+      saveScanResume(); // mémorise ce qui reste à faire (survit à un rechargement de la page)
       await persistState(); // filet de sécurité final — couvre aussi le groupe qui sort par break juste après avoir trouvé des annonces (son propre persistState() plus haut est alors sauté)
       renderAll();
       updateScanHead();
@@ -2466,10 +2517,13 @@
         ? (rateLimited ? 'reprise automatique à la fin du compte à rebours' : 'nouvel essai automatique après une courte pause' + (hadPayloadTooLarge ? ' (recherche allégée, source par source)' : ''))
         : (stalled ? `reprise automatique arrêtée (aucun progrès sur ${AUTO_STALL_MAX} tours de suite) — relance le scan à la main pour ne retenter que ceux-là` : 'relance le scan pour ne retenter que ceux-là');
       const autoDoneTxt = (isAuto && succeededGroups >= fullGroups.length) ? ` Scan complet ${succeededGroups}/${fullGroups.length} après reprise automatique.` : '';
+      // Sources abandonnées pour ce cycle (échecs répétés) : le scan peut ainsi se terminer, mais on le dit clairement.
+      const skippedList = [...new Set([...skippedUnits].filter(k=>fullGroups.some(g=>k.startsWith(g.label+'|'))).map(k=>{ const i = k.indexOf('|'); return k.slice(i+1)==='*' ? k.slice(0,i) : k.slice(i+1); }))];
+      const skipTxt = skippedList.length ? ` ⚠️ ${skippedList.length>1 ? skippedList.length+' sources ignorées' : '1 source ignorée'} après échecs répétés (${skippedList.join(', ')}) — ${skippedList.length>1?'retentées':'retentée'} au prochain scan.` : '';
 
       if(cumulativeAdded > 0){
         statusEl.className = 'scan-status ok';
-        let extra = '.' + autoDoneTxt;
+        let extra = '.' + autoDoneTxt + skipTxt;
         if(succeededGroups < fullGroups.length){
           const reason = rateLimited
             ? 'limite Groq atteinte'
@@ -2487,7 +2541,7 @@
         statusEl.textContent = `⚠️ Scan partiel : ${succeededGroups}/${fullGroups.length} recherches ont abouti (aucune nouvelle annonce dessus) — ${reason} ; ${retryTxt}.`;
       }else{
         statusEl.className = 'scan-status ok';
-        statusEl.textContent = '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier, ou la recherche a pris trop de temps : réessaie si besoin).' + autoDoneTxt;
+        statusEl.textContent = '✅ Scan terminé — aucune nouvelle annonce trouvée cette fois (tout ce qui existe est déjà au dossier, ou la recherche a pris trop de temps : réessaie si besoin).' + autoDoneTxt + skipTxt;
       }
 
       if(lastGroqRateInfo.remainingRequests !== null && lastGroqRateInfo.remainingRequests <= 0 && lastGroqRateInfo.resetRequestsMs){
